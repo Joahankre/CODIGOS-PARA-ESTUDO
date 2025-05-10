@@ -1,0 +1,23 @@
+' This iLogic rule will reset the display name of the active document (part or assembly) and its components if it's an assembly
+
+Dim oDoc As Document = ThisApplication.ActiveDocument
+
+Select Case oDoc.DocumentType
+  Case DocumentTypeEnum.kPartDocumentObject 'If it's a part document
+    Dim oPartDoc As PartDocument = oDoc
+    oPartDoc.DisplayName = ""
+
+  Case DocumentTypeEnum.kAssemblyDocumentObject 'If it's an assembly document
+    Dim oAsmDoc As AssemblyDocument = oDoc
+    oAsmDoc.DisplayName = ""   ' Reset the display name for each component
+    For Each oCompOcc As ComponentOccurrence In oAsmDoc.ComponentDefinition.Occurrences          
+      oCompOcc.Name = ""
+    Next
+
+  Case Else
+    MessageBox.Show("This script supports only part and assembly documents.")
+    Return
+
+End Select
+
+ThisApplication.ActiveView.Update()
