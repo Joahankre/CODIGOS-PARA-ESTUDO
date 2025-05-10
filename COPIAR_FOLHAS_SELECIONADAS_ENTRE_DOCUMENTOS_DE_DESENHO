@@ -1,0 +1,31 @@
+Sub Main()
+
+    ' Documento de desenho atual
+    Dim drawingDoc As DrawingDocument
+    drawingDoc = ThisDoc.Document
+
+    Dim tempDrawingDoc As DrawingDocument = Nothing
+
+    ' Percorre os objetos selecionados no desenho
+    For Each selectedObject As Object In drawingDoc.SelectSet
+
+        ' Verifica se o objeto é uma folha (Sheet)
+        If TypeOf selectedObject Is Sheet Then
+            Dim sheet As Sheet = selectedObject
+
+            ' Cria documento temporário de desenho se ainda não foi criado
+            If tempDrawingDoc Is Nothing Then
+                tempDrawingDoc = ThisApplication.Documents.Add(DocumentTypeEnum.kDrawingDocumentObject, , False)
+            End If
+
+            ' Copia a folha para o documento temporário e depois de volta ao original
+            sheet.CopyTo(tempDrawingDoc).CopyTo(drawingDoc)
+        End If
+    Next
+
+    ' Fecha o documento temporário se foi criado
+    If Not tempDrawingDoc Is Nothing Then
+        tempDrawingDoc.Close(True)
+    End If
+
+End Sub
