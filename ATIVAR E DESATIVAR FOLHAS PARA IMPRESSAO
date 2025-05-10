@@ -1,0 +1,101 @@
+Imports System.Windows.Forms
+
+Sub Main()
+
+    ' Documento de desenho ativo
+    Dim oDoc As DrawingDocument = ThisApplication.ActiveDocument
+    Dim oSheets As Sheets = oDoc.Sheets
+
+    ' Definir dimensões maiores (aproximadamente metade da tela full HD)
+    Dim formWidth As Integer = 960
+    Dim formHeight As Integer = 720 ' Aumentando a altura do formulário para facilitar a leitura
+
+    ' Criar formulário
+    Dim form As New Form()
+    form.Text = "SELECIONE AS FOLHAS PARA IMPRESSÃO"
+    form.Width = formWidth
+    form.Height = formHeight
+    form.StartPosition = FormStartPosition.CenterScreen
+
+    ' Label de instrução
+    Dim lbl As New Label()
+    lbl.Text = "Marque as folhas que deseja incluir na impressão:"
+    lbl.Left = 20
+    lbl.Top = 20
+    lbl.Width = formWidth - 40
+    lbl.Height = 30
+    form.Controls.Add(lbl)
+
+    ' Ajustar a altura da lista de folhas proporcionalmente
+    Dim sheetListHeight As Integer = formHeight - 220 ' Ajuste proporcional
+    ' Lista de folhas
+    Dim sheetList As New CheckedListBox()
+    sheetList.Left = 20
+    sheetList.Top = lbl.Bottom + 10 ' Coloca logo abaixo da label
+    sheetList.Width = formWidth - 40
+    sheetList.Height = sheetListHeight ' Definir altura proporcional
+    sheetList.CheckOnClick = True
+    form.Controls.Add(sheetList)
+
+    ' Adicionar folhas
+    For Each sheet As Sheet In oSheets
+        sheetList.Items.Add(sheet.Name, Not sheet.ExcludeFromPrinting)
+    Next
+
+    ' Botão Selecionar Tudo
+    Dim btnSelectAll As New Button()
+    btnSelectAll.Text = "Selecionar Tudo"
+    btnSelectAll.Left = 60
+    btnSelectAll.Top = sheetList.Bottom + 10
+    btnSelectAll.Width = 180
+    btnSelectAll.Height = 35
+    AddHandler btnSelectAll.Click, Sub(sender As Object, e As EventArgs)
+        For i As Integer = 0 To sheetList.Items.Count - 1
+            sheetList.SetItemChecked(i, True)
+        Next
+    End Sub
+    form.Controls.Add(btnSelectAll)
+
+    ' Botão Desmarcar Tudo
+    Dim btnDeselectAll As New Button()
+    btnDeselectAll.Text = "Desmarcar Tudo"
+    btnDeselectAll.Left = btnSelectAll.Right + 40
+    btnDeselectAll.Top = btnSelectAll.Top
+    btnDeselectAll.Width = 180
+    btnDeselectAll.Height = 35
+    AddHandler btnDeselectAll.Click, Sub(sender As Object, e As EventArgs)
+        For i As Integer = 0 To sheetList.Items.Count - 1
+            sheetList.SetItemChecked(i, False)
+        Next
+    End Sub
+    form.Controls.Add(btnDeselectAll)
+
+    ' Botão Confirmar
+    Dim btnOk As New Button()
+    btnOk.Text = "Confirmar"
+    btnOk.Left = formWidth \ 2 - 100
+    btnOk.Top = btnSelectAll.Bottom + 10
+    btnOk.Width = 200
+    btnOk.Height = 40
+    AddHandler btnOk.Click, Sub(sender As Object, e As EventArgs)
+        form.DialogResult = DialogResult.OK
+        form.Close()
+    End Sub
+    form.Controls.Add(btnOk)
+
+    ' Exibir formulário
+    Dim result As DialogResult = form.ShowDialog()
+
+    ' Aplicar alterações
+    If result = DialogResult.OK Then
+        For i As Integer = 0 To sheetList.Items.Count - 1
+            Dim sheetName As String = sheetList.Items(i).ToString()
+            Dim selectedSheet As Sheet = oSheets.Item(sheetName)
+            selectedSheet.ExcludeFromPrinting = Not sheetList.GetItemChecked(i)
+        Next
+        MessageBox.Show("Configuração de impressão atualizada com sucesso!", "Sucesso")
+    Else
+        MessageBox.Show("Ação cancelada pelo usuário.", "Cancelado")
+    End If
+
+End Sub
