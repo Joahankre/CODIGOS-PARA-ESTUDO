@@ -1,0 +1,49 @@
+'FUNÇAO RECURSIVA 
+Sub Main()
+
+    ' Documento atual (montagem)
+    Dim oAssyDoc As AssemblyDocument
+    oAssyDoc = ThisDoc.Document
+
+    ' Obter os nomes dos componentes
+    Dim cNomes As Collection
+    cNomes = ObterTodosNomesComponentes(oAssyDoc)
+
+    ' Exibir os nomes no log do iLogic
+    For Each nome As Object In cNomes
+        Logger.Info(nome)
+    Next
+
+End Sub
+
+Function ObterTodosNomesComponentes(ByVal oAssyDoc As AssemblyDocument) As Collection
+
+    Dim cNomes As New Collection
+    Dim oCompOcc As ComponentOccurrence
+
+    For Each oCompOcc In oAssyDoc.ComponentDefinition.Occurrences
+
+        cNomes.Add(oCompOcc.Name)
+
+        If oCompOcc.DefinitionDocumentType = DocumentTypeEnum.kAssemblyDocumentObject Then
+
+            Dim oSubAssyDoc As AssemblyDocument
+            Try
+                oSubAssyDoc = oCompOcc.Definition.Document
+            Catch
+                Continue For
+            End Try
+
+            If Not oSubAssyDoc Is Nothing Then
+                Dim cSubNomes As Collection
+                cSubNomes = ObterTodosNomesComponentes(oSubAssyDoc)
+
+                For Each nomeSubComp As Object In cSubNomes
+                    cNomes.Add(nomeSubComp)
+                Next
+            End If
+        End If
+    Next
+
+    Return cNomes
+End Function
