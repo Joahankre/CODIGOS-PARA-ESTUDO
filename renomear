@@ -1,0 +1,931 @@
+Imports System.IO
+Imports System.Text.RegularExpressions
+Sub Main()
+	' Declare the necessary namespaces
+	Dim oAsmDoc As AssemblyDocument
+	Dim oSelections As SelectSet
+	Dim selectedComponents As String = ""
+	Dim initialSelections As Collection
+
+	' Get the active assembly document
+	oAsmDoc = ThisApplication.ActiveDocument
+
+	If oAsmDoc.DocumentType <> DocumentTypeEnum.kAssemblyDocumentObject Then
+	    MessageBox.Show("This iLogic code should be run in an assembly document!", "CADMajigs")
+	    Exit Sub
+	End If
+
+	oSelections = oAsmDoc.SelectSet
+
+	' Create a new transaction
+	Dim oTransMgr As TransactionManager
+	oTransMgr = ThisApplication.TransactionManager
+	Dim oTrans As Transaction
+	oTrans = oTransMgr.StartTransaction(oAsmDoc, "CADMajigs Operation")
+	
+	Try
+		
+		' Check if any components are selected
+		If oSelections.Count = 0 Then
+			Dim result As DialogResult = MessageBox.Show("No components selected! Would you like to select all components?", "CADMajigs", MessageBoxButtons.YesNo)
+			
+			If result = DialogResult.Yes Then
+		
+				oSelections.Clear()
+				
+				For Each oComp As ComponentOccurrence In oAsmDoc.ComponentDefinition.Occurrences
+				    ThisApplication.ActiveDocument.SelectSet.Select(oComp)
+				Next
+				
+			    ' If no components are in the assembly (unlikely if it's an assembly, but still good to check)
+			    If oSelections.Count = 0 Then
+			        MessageBox.Show("There are no components in this assembly.", "CADMajigs")
+			        Exit Sub
+			    End If
+			Else
+			    Exit Sub
+			End If
+		End If
+		
+		' Store the current selection set for later restoration
+	    initialSelections = GetSelection(oSelections)
+
+		' Loop through the selection set and gather the names
+		For Each oObj In oSelections
+		    If TypeOf oObj Is ComponentOccurrence Then
+		        Dim oComp As ComponentOccurrence
+		        oComp = oObj
+		        selectedComponents = selectedComponents & oComp.Name & vbCrLf
+		    End If
+		Next
+		selectedComponents = TruncateTextBlock(selectedComponents, 30, 41, "", "...", "... List continues here")
+		
+        optionsList = New String() {"Do nothing (Cancel)", _
+		                            "Rename the Display Names", _
+		                            "Display Names Substitute Text (Replace)", _
+		                            "Display Names Using Template (Custom Template)", _
+		                            "Leading Zero's in Display Names (Custom Template)", _
+		                            "Rename Display Names (To match Filenames)", _
+		                            "Rename Filenames (To match Display Names)"}
+
+        Dim prompt As String = "Select the option to apply to the following files:" & vbCrLf & vbCrLf & selectedComponents & vbCrLf
+        Dim userChoice As String
+        userChoice = InputListBox(prompt, optionsList, optionsList(0), Title := "CADMajigs", ListName := "Available Options")
+
+        ' Action based on the user's choice
+        Select Case userChoice
+            Case optionsList(0) 'Do nothing'
+                ' Do nothing
+            Case optionsList(1) 'Rename the Display Names"
+                RenameDisplayNames(oSelections)
+            Case optionsList(2) 'Display Names Substitute Text (Replace)"
+                DisplayNamesSubstitute(oSelections)
+		    Case optionsList(3) 'Display Names Using Template (Custom Format)"
+		        DisplayNamesUsingTemplate(oSelections)
+		    Case optionsList(4) 'Leading Zero's in Display Names (Custom Template)"
+		        FormatLeadingZeros(oSelections) ' Assuming you'll pass the oSelections to your new subroutine.
+		    Case optionsList(5) 'Rename Display Names (To match Filenames)"
+		        RenameDisplayNamesToMatchFilenames(oSelections)
+		    Case optionsList(6) 'Rename Filenames (To match Display Names)"
+		        RenameFilenamesToMatchDisplayNames(oSelections)
+            Case Else
+                ' No recognized action chosen
+        End Select
+
+	    ' Call the Update method to update the Inventor model
+		ThisDoc.Document.Rebuild()
+		ThisApplication.ActiveView.Update()
+	    ' Commit the transaction at the end of your code
+		oTrans.End
+	Catch ex As Exception
+		' Rollback the transaction if there's any error
+		oTrans.Abort()
+		MessageBox.Show("An error occurred: " & ex.Message)
+	End Try
+	
+    ' Restore the initial selection set
+    RestoreSelection(initialSelections)
+
+End Sub
+
+Sub RenameDisplayNames(ByVal oSelection As SelectSet)
+    Dim oAsmDoc As AssemblyDocument
+    oAsmDoc = ThisApplication.ActiveDocument
+	
+    Dim groupSimilarFiles As DialogResult = MessageBox.Show("Would you like to group similar files?", "CADMajigs", MessageBoxButtons.YesNo)
+    
+    Dim handledPaths As New Dictionary(Of String, String) ' Keeps track of file paths that we've already renamed and the new name assigned
+
+    For Each oObj In oSelection
+        If TypeOf oObj Is ComponentOccurrence Then
+            Dim oComp As ComponentOccurrence
+            oComp = oObj
+            
+            Dim currentPath As String = oComp.ReferencedDocumentDescriptor.FullDocumentName
+            
+            If groupSimilarFiles = DialogResult.Yes And handledPaths.ContainsKey(currentPath) Then
+                ' If the path was already handled, rename this component with the previously used name and skip to next
+                oComp.Name = GetUniqueDisplayName(handledPaths(currentPath))
+                Continue For
+            End If
+
+            ' Check if there's a suffix and truncate it
+            Dim displayName As String = oComp.Name
+            If displayName.Contains(":") Then
+                displayName = displayName.Substring(0, displayName.LastIndexOf(":"))
+            End If
+
+            Dim newName As String = InputBox("Rename component:" & vbCrLf  & vbCrLf & oComp.Name, "CADMajigs", displayName)
+            If newName <> "" Then
+                handledPaths(currentPath) = newName ' Remember this path and its new name
+                oComp.Name = GetUniqueDisplayName(newName)
+            End If
+
+        End If
+    Next
+	
+End Sub
+
+Sub RenameFilenamesToMatchDisplayNames(ByVal oSelection As SelectSet)
+    Dim oAsmDoc As AssemblyDocument
+    oAsmDoc = ThisApplication.ActiveDocument
+    
+    Dim handledDisplayNames As New Dictionary(Of String, String) ' Keeps track of display names we've already handled and the new path
+
+    For Each oObj In oSelection
+        If TypeOf oObj Is ComponentOccurrence Then
+            Dim oComp As ComponentOccurrence
+            oComp = oObj
+            Dim currentPath As String = oComp.ReferencedDocumentDescriptor.FullDocumentName
+            Dim currentDisplayName As String = oComp.Name.Split(":")(0) ' Remove the suffix
+
+            If handledDisplayNames.ContainsKey(currentDisplayName) Then
+                ' Replace with the already created file
+                oComp.Replace(handledDisplayNames(currentDisplayName), False)
+                Continue For
+            End If
+            
+            Dim newFilename As String = System.IO.Path.Combine(System.IO.Path.GetDirectoryName(currentPath), currentDisplayName & System.IO.Path.GetExtension(currentPath))
+
+            ' Check for invalid characters
+            Dim invalidChars As Char() = System.IO.Path.GetInvalidFileNameChars()
+            Dim hasInvalidChars As Boolean = currentDisplayName.IndexOfAny(invalidChars) >= 0
+            
+            If hasInvalidChars Then
+                Dim result As DialogResult = MessageBox.Show("The filename contains invalid characters. Would you like to remove all non-valid characters?", "CADMajigs", MessageBoxButtons.YesNo)
+                
+                If result = DialogResult.Yes Then
+                    Dim newFileNameOnly As String = currentDisplayName
+                    For Each c As Char In invalidChars
+                        newFileNameOnly = newFileNameOnly.Replace(c, "")
+                    Next
+                    'Recombine the sanitized filename with its directory and extension
+                    newFilename = System.IO.Path.Combine(System.IO.Path.GetDirectoryName(currentPath), newFileNameOnly & System.IO.Path.GetExtension(currentPath))
+                Else
+                    Dim validInput As Boolean = False
+                    While Not validInput
+                        ' Prompt the user to enter only the filename, excluding the path and extension
+                        Dim editedFileName As String = currentDisplayName
+                        editedFileName = InputBox("Enter a valid filename:", "CADMajigs", editedFileName)
+                        
+                        ' Combine the edited filename with the original path and extension
+                        newFilename = System.IO.Path.Combine(System.IO.Path.GetDirectoryName(currentPath), editedFileName & System.IO.Path.GetExtension(currentPath))
+                        
+                        ' Check only the edited filename for invalid characters, not the full path
+                        hasInvalidChars = editedFileName.IndexOfAny(invalidChars) >= 0
+                        If Not hasInvalidChars Then
+                            validInput = True
+                        Else
+                            MessageBox.Show("The filename contains invalid characters. Please re-enter.", "CADMajigs")
+                        End If
+                    End While
+                End If
+            End If
+
+            ' Check if the file already exists
+            While System.IO.File.Exists(newFilename)
+                Dim overwrite As DialogResult = MessageBox.Show(newFilename & " already exists. Do you want to create a unique filename by appending a suffix?", "CADMajigs", MessageBoxButtons.YesNo)
+                
+                If overwrite = DialogResult.Yes Then
+                    Dim counter As Integer = 1
+                    Dim baseName As String = System.IO.Path.GetFileNameWithoutExtension(newFilename)
+                    Dim extension As String = System.IO.Path.GetExtension(newFilename)
+                    Dim directoryPath As String = System.IO.Path.GetDirectoryName(newFilename)
+
+                    ' Find a unique filename by appending a suffix
+                    While System.IO.File.Exists(newFilename)
+                        newFilename = System.IO.Path.Combine(directoryPath, baseName & "(" & counter & ")" & extension)
+                        counter += 1
+                    End While
+                Else
+                    Dim filePathWithoutExtension As String = System.IO.Path.GetDirectoryName(currentPath) & "\" & System.IO.Path.GetFileNameWithoutExtension(currentPath)
+                    Dim fileExtension As String = System.IO.Path.GetExtension(currentPath)
+                    
+                    ' Keep prompting the user until a unique filename is provided
+                    Dim fileExists As Boolean = True
+                    While fileExists
+                        ' Only get the filename without path and extension for the user to edit
+                        newFilename = InputBox("Enter a new filename:", "CADMajigs", System.IO.Path.GetFileNameWithoutExtension(newFilename))
+                    
+                        ' Append the edited filename back to the original path
+                        newFilename = System.IO.Path.Combine(System.IO.Path.GetDirectoryName(currentPath), newFilename & fileExtension)
+                    
+                        ' Check if the new file path exists
+                        fileExists = System.IO.File.Exists(newFilename)
+                        If fileExists Then
+                            MessageBox.Show("The filename already exists. Please choose a different name.", "CADMajigs")
+                        End If
+                    End While
+                End If
+            End While
+
+            ' Create a copy and replace the component with the new file
+            System.IO.File.Copy(currentPath, newFilename)
+            oComp.Replace(newFilename, False)
+            
+            ' Add to our handled list
+            handledDisplayNames.Add(currentDisplayName, newFilename)
+        End If
+    Next
+End Sub
+
+Sub RenameDisplayNamesToMatchFilenames(ByVal Components As SelectSet)
+    ' Store the current selection set for later restoration
+    Dim initialSelections As Collection
+    initialSelections = GetSelection(Components)
+
+    ' First pass: Rename all to a temporary unique name to avoid clashes
+    Dim tempNamePrefix As String = "TempUniqueName_"
+    Dim tempNameCounter As Integer = 1
+    For Each oObj In Components
+        If TypeOf oObj Is ComponentOccurrence Then
+            Dim oComp As ComponentOccurrence
+            oComp = oObj
+            
+            While DisplayNameExists(tempNamePrefix & tempNameCounter.ToString())
+                tempNameCounter += 1
+            End While
+
+            oComp.Name = tempNamePrefix & tempNameCounter.ToString()
+            tempNameCounter += 1
+        End If
+    Next
+
+    RestoreSelection(initialSelections)
+    Dim oAsmDoc As AssemblyDocument
+    oAsmDoc = ThisApplication.ActiveDocument
+    Components = oAsmDoc.SelectSet
+
+	' Second pass: Set the name to "" to make them default to filenames
+    For Each oObj In Components
+        If TypeOf oObj Is ComponentOccurrence Then
+            Dim oComp As ComponentOccurrence
+            oComp = oObj
+            oComp.Name = ""
+        End If
+    Next
+
+    ' Restore the initial selection set
+    RestoreSelection(initialSelections)
+End Sub
+
+Sub DisplayNamesSubstitute(oSelections As SelectSet)
+    Dim oAsmDoc As Inventor.AssemblyDocument
+    oAsmDoc = ThisApplication.ActiveDocument
+
+    ' Generate a list of display names
+    Dim displayNamesList As String = ""
+    For Each oComp In oSelections
+        displayNamesList &= oComp.Name & vbCrLf
+    Next
+	displayNamesList = TruncateTextBlock(displayNamesList, 30, 41, "", "...", "... List continues here") ' For a max of X lines and Y characters per line
+
+
+    ' Prompt user for old and new texts
+    Dim oldText As String = InputBox("Selected Components" & vbCrLf & displayNamesList & vbCrLf & vbCrLf & vbCrLf & "Please enter the Text to replace (Old Text):", "CADMajigs")
+    If oldText = "" Or oldText Is Nothing Then
+        MessageBox.Show("Operation cancelled or no text provided. No changes were made.", "CADMajigs")
+        Exit Sub
+    End If
+
+    Dim newText As String = InputBox("Selected Components" & vbCrLf & displayNamesList & vbCrLf & "Please enter the New Text to replace with (New Text):", "CADMajigs")
+
+    Dim changedCount As Integer = 0 ' This will keep track of how many display names were changed
+    Dim totalCount As Integer = oSelections.Count ' This will track the total number of selected components
+
+    ' Cycle through all display names and replace old text with new text
+    For Each oComp In oSelections
+		' Check if the oComp.Name contains the old text
+		If Not oComp.Name.Contains(oldText) Then
+			Continue For
+		End If
+		
+        ' Extract base name by removing the suffix after the last colon
+        Dim baseName As String = oComp.Name.Substring(0, oComp.Name.LastIndexOf(":"))
+
+        ' Replace the old text with new text
+        baseName = Replace(baseName, oldText, newText)
+
+        ' Append a new unique suffix
+        Dim newDisplayName As String = GetUniqueDisplayName(baseName)
+
+        ' If the name was changed, increase the changedCount
+        If oComp.Name <> newDisplayName Then
+            oComp.Name = newDisplayName
+            changedCount += 1
+        End If
+    Next
+
+    ' Notify the user about the result
+    If changedCount = 0 Then
+        MessageBox.Show("""" & oldText & """ was not found in any selected components. No changes were made.", "CADMajigs")
+    Else
+        MessageBox.Show(changedCount & " out of " & totalCount & " display names were changed.", "CADMajigs")
+    End If
+	
+End Sub
+
+Sub DisplayNamesUsingTemplate(ByVal oSelection As SelectSet)
+    Dim groupBySource As Boolean = (MessageBox.Show("Do you want components with the same source file to be grouped together and assigned identical display names?", "CADMajigs", MessageBoxButtons.YesNo) = DialogResult.Yes)
+    Dim namingTemplate As String = InputBox("Please provide a naming template:", "CADMajigs", "Plate [c,01,1]")
+
+    ' Check for Help or cancellation or empty string
+    If namingTemplate = "Help"
+        TemplateHelp("You asked for Help", "")
+        Exit Sub
+    End If
+	If namingTemplate = "" Or namingTemplate Is Nothing Then
+        TemplateHelp("You did not enter an template. Action cancelled with no changes.", "")
+        Exit Sub
+    End If
+
+    On Error GoTo ErrorHandler
+
+    Dim counters As New Dictionary(Of String, Integer())
+    Dim groupDictionary As New Dictionary(Of String, String)()
+
+    ' Regex patterns for each field
+    Dim counterPattern As String = "\[c,(\d+),(\d+)\]"
+    Dim iPropertyPattern As String = "\[i,(.*?)\]"
+    Dim CustomiPropertyPattern As String = "\[ic,(.*?)\]"
+    Dim parameterPattern As String = "\[p,(.*?)\]"
+	Dim parameterUnitsPattern As String = "\[pu,(.*?)\]"
+	Dim datePattern As String = "\[d,(.*?)\]"
+	Dim dateCreatedPattern As String = "\[dc,(.*?)\]"
+	Dim dateModifiedPattern As String = "\[dm,(.*?)\]"
+	Dim fileNamePattern As String = "\[f\]"
+	Dim fileExtPattern As String = "\[fe\]"
+	Dim filePathPattern As String = "\[fp\]"
+
+    For Each oObj In oSelection
+        If TypeOf oObj Is ComponentOccurrence Then
+            Dim oComp As ComponentOccurrence = DirectCast(oObj, ComponentOccurrence)
+            Dim currentName As String = namingTemplate
+            Dim referencedPath As String = oComp.ReferencedDocumentDescriptor.FullDocumentName
+
+            ' Group by source file logic
+            If groupBySource AndAlso groupDictionary.ContainsKey(referencedPath) Then
+                oComp.Name = GetUniqueDisplayName(groupDictionary(referencedPath))
+                Continue For
+            End If
+
+            ' Counter Replacement
+            Dim counterMatches As MatchCollection = Regex.Matches(namingTemplate, counterPattern)
+            For Each Match As Match In counterMatches
+                Dim startValue As Integer = Integer.Parse(Match.Groups(1).Value)
+                Dim increment As Integer = Integer.Parse(Match.Groups(2).Value)
+                Dim counterKey As String = Match.Value
+
+                If Not counters.ContainsKey(counterKey) Then
+                    counters(counterKey) = New Integer() {startValue, increment}
+                Else
+                    counters(counterKey)(0) += counters(counterKey)(1)
+                End If
+
+                Dim replacement As String = counters(counterKey)(0).ToString().PadLeft(Match.Groups(1).Value.Length, "0"c)
+                currentName = currentName.Replace(Match.Value, replacement)
+            Next
+
+            ' iProperty Replacement
+            Dim iPropMatches As MatchCollection = Regex.Matches(namingTemplate, iPropertyPattern)
+            For Each match As Match In iPropMatches
+                Dim iPropertyName As String = match.Groups(1).Value
+                Dim iPropertyValue As String = GetiPropertyValue(oComp, iPropertyName)
+                currentName = currentName.Replace(match.Value, iPropertyValue)
+            Next
+
+            ' Custom iProperty Replacement
+            Dim CustomiPropMatches As MatchCollection = Regex.Matches(namingTemplate, CustomiPropertyPattern)
+            For Each Match As Match In CustomiPropMatches
+                Dim CustomiPropertyName As String = Match.Groups(1).Value
+                Dim CustomiPropertyValue As String = GetCustomiPropertyValue(oComp, CustomiPropertyName)
+                currentName = currentName.Replace(Match.Value, CustomiPropertyValue)
+            Next
+
+            ' Parameter Replacement
+            Dim paramMatches As MatchCollection = Regex.Matches(namingTemplate, parameterPattern)
+            For Each match As Match In paramMatches
+                Dim parameterName As String = match.Groups(1).Value
+                Dim parameterValue As String = GetParameterValue(oComp, parameterName)
+                currentName = currentName.Replace(match.Value, parameterValue)
+            Next
+
+			' Parameter Units Replacement
+			Dim parameterUnitsMatches As MatchCollection = Regex.Matches(namingTemplate, parameterUnitsPattern)
+			For Each match As Match In parameterUnitsMatches
+			    Dim parameterName As String = match.Groups(1).Value
+			    Dim parameterUnit As String = GetParameterUnits(oComp, parameterName)
+			    currentName = currentName.Replace(match.Value, parameterUnit)
+			Next
+
+	        Dim dateMatches As MatchCollection = Regex.Matches(namingTemplate, datePattern)
+	        For Each Match As Match In dateMatches
+	            Dim DateFormat As String = Match.Groups(1).Value
+	            Dim currentDate As String = FormatDate(DateTime.Now, DateFormat)
+	            currentName = currentName.Replace(Match.Value, currentDate)
+	        Next
+			
+			' Date Created Replacement
+			Dim dateCreatedMatches As MatchCollection = Regex.Matches(namingTemplate, "\[dc,(.*?)\]")
+			For Each Match As Match In dateCreatedMatches
+			    Dim DateFormat As String = Match.Groups(1).Value
+			    Dim dateCreated As DateTime = GetDateCreatedFromFile(oComp)
+			    Dim formattedDateCreated As String = FormatDate(dateCreated, DateFormat)
+			    currentName = currentName.Replace(Match.Value, formattedDateCreated)
+			Next
+			
+			' Date Modified Replacement
+			Dim dateModifiedMatches As MatchCollection = Regex.Matches(namingTemplate, "\[dm,(.*?)\]")
+			For Each Match As Match In dateModifiedMatches
+			    Dim DateFormat As String = Match.Groups(1).Value
+			    Dim dateModified As DateTime = GetDateModifiedFromFile(oComp)
+			    Dim formattedDateModified As String = FormatDate(dateModified, DateFormat)
+			    currentName = currentName.Replace(Match.Value, formattedDateModified)
+			Next
+			
+			' File Name Replacement (without extension)
+			Dim fileNameMatches As MatchCollection = Regex.Matches(namingTemplate, fileNamePattern)
+			For Each Match As Match In fileNameMatches
+			    Dim fileNameWithoutExtension As String = System.IO.Path.GetFileNameWithoutExtension(referencedPath)
+			    currentName = currentName.Replace(Match.Value, fileNameWithoutExtension)
+			Next
+			
+			' File Extension Replacement
+			Dim fileExtMatches As MatchCollection = Regex.Matches(namingTemplate, fileExtPattern)
+			For Each Match As Match In fileExtMatches
+			    Dim fileExtension As String = System.IO.Path.GetExtension(referencedPath).TrimStart(".")
+			    currentName = currentName.Replace(Match.Value, fileExtension)
+			Next
+			
+			' File Path Replacement
+			Dim filePathMatches As MatchCollection = Regex.Matches(namingTemplate, filePathPattern)
+			For Each Match As Match In filePathMatches
+			    currentName = currentName.Replace(Match.Value, referencedPath)
+			Next
+
+            ' Update the dictionary if we're grouping by source
+            If groupBySource Then
+                groupDictionary(referencedPath) = currentName
+            End If
+
+            currentName = GetUniqueDisplayName(currentName)
+            oComp.Name = currentName
+        End If
+    Next
+
+    Exit Sub
+ErrorHandler:
+    TemplateHelp("An error occurred while processing your template. Please check your template and try again.", "")
+End Sub
+
+Sub TemplateHelp(PrefixContent As String, SuffixContent As String)
+    Dim messageContent As String
+    
+    messageContent = "TEMPLATE INSTRUCTIONS:" & vbCrLf & _
+                     vbCrLf & _
+                     "When creating templates, different field specifiers can be used to include dynamic content. These field specifiers follow specific formats and serve distinct purposes. Here's a summary of each along with illustrative examples:" & vbCrLf & _
+                     vbCrLf & _
+                     "1. Counter" & vbCrLf & _
+                     "   Format: [c,startValue,increment]" & vbCrLf & _
+                     "   Purpose: Generates a unique number sequence." & vbCrLf & _
+                     "   Example: Template ""Part-[c,100,5]"" might generate names like ""Part-100"", ""Part-105"", ""Part-110"", etc." & vbCrLf & _
+                     vbCrLf & _
+                     "2. iProperty" & vbCrLf & _
+                     "   Format: [i,PropertyName]" & vbCrLf & _
+                     "   Purpose: Fetches standard iProperty values." & vbCrLf & _
+                     "   Example: Template ""DrawnBy-[i,Author]"" with the ""Author"" iProperty as ""John"" will generate ""DrawnBy-John""." & vbCrLf & _
+                     vbCrLf & _
+                     "3. Custom iProperty" & vbCrLf & _
+                     "   Format: [ic,CustomPropertyName]" & vbCrLf & _
+                     "   Purpose: Fetches custom iProperty values." & vbCrLf & _
+                     "   Example: Template ""Material-[ic,MaterialType]"" with custom iProperty ""MaterialType"" as ""Steel"" will generate ""Material-Steel""." & vbCrLf & _
+                     vbCrLf & _
+                     "4. Parameter" & vbCrLf & _
+                     "   Format: [p,ParameterName]" & vbCrLf & _
+                     "   Purpose: Fetches parameter values." & vbCrLf & _
+                     "   Example: Template ""Length-[p,Width]"" with parameter ""Width"" value as ""50mm"" will generate ""Length-50mm""." & vbCrLf & _
+                     vbCrLf & _
+                     "5. Parameter Units" & vbCrLf & _
+                     "   Format: [pu,ParameterName]" & vbCrLf & _
+                     "   Purpose: Fetches parameter units." & vbCrLf & _
+                     "   Example: Template ""Width in [pu,Width]"" with parameter ""Width"" in centimeters will generate ""Width in cm""." & vbCrLf & _
+                     vbCrLf & _
+                     "6. Date (Current)" & vbCrLf & _
+                     "   Format: [d,DateFormat]" & vbCrLf & _
+                     "   Purpose: Displays current date." & vbCrLf & _
+                     "   Example: For date ""1st January 2023"", template ""Today-[d,dd-MM-yyyy]"" will generate ""Today-01-01-2023""." & vbCrLf & _
+                     vbCrLf & _
+                     "7. Date Created" & vbCrLf & _
+                     "   Format: [dc,DateFormat]" & vbCrLf & _
+                     "   Purpose: Displays file creation date." & vbCrLf & _
+                     "   Example: For creation date ""10th February 2022"", template ""CreatedOn-[dc,MM-yyyy]"" will generate ""CreatedOn-02-2022""." & vbCrLf & _
+                     vbCrLf & _
+                     "8. Date Modified" & vbCrLf & _
+                     "   Format: [dm,DateFormat]" & vbCrLf & _
+                     "   Purpose: Displays the file's last modified date." & vbCrLf & _
+                     "   Example: For last modification on ""15th March 2023"", template ""Modified-[dm,yyyy]"" will generate ""Modified-2023""." & vbCrLf & _
+                     vbCrLf & _
+                     "9. File Name (without extension)" & vbCrLf & _
+                     "   Format: [f]" & vbCrLf & _
+                     "   Purpose: Fetches file name without extension." & vbCrLf & _
+                     "   Example: For file ""ExamplePart.ipt"", template ""Original-[f]"" will generate ""Original-ExamplePart""." & vbCrLf & _
+                     vbCrLf & _
+                     "10. File Extension" & vbCrLf & _
+                     "   Format: [fe]" & vbCrLf & _
+                     "   Purpose: Fetches file extension." & vbCrLf & _
+                     "   Example: For file ""DesignPart.ipt"", template ""Extension.[fe]"" will generate ""Extension.ipt""." & vbCrLf & _
+                     vbCrLf & _
+                     "11. File Path" & vbCrLf & _
+                     "   Format: [fp]" & vbCrLf & _
+                     "   Purpose: Fetches full file path." & vbCrLf & _
+                     "   Example: For file at ""C:\Documents\Designs\Part1.ipt"", template ""Path-[fp]"" will generate ""Path-C:\Documents\Designs\Part1.ipt""."
+
+    If PrefixContent <> "" Then messageContent = PrefixContent & vbCrLf & vbCrLf & messageContent
+    If SuffixContent <> "" Then messageContent = messageContent & vbCrLf & vbCrLf & SuffixContent
+
+    MessageBox.Show(messageContent, "CADMajigs - Template Instructions")
+End Sub
+
+Function GetiPropertyValue(oComp As ComponentOccurrence, iPropertyName As String) As String
+    ' Iterate through common iProperty sets
+    Dim iPropertySets As Array = {"Design Tracking Properties", "Summary Information", "Document Summary Information"}
+    
+    For Each iPropertySet As String In iPropertySets
+        Dim propSet As PropertySet = oComp.Definition.Document.PropertySets.item(iPropertySet)
+        
+        For Each prop In propSet
+            If prop.Name = iPropertyName Then
+                Return prop.Value.ToString()
+            End If
+        Next
+    Next
+    
+    Return String.Empty ' Return an empty string if not found
+End Function
+
+Function GetCustomiPropertyValue(oComp As ComponentOccurrence, CustomiPropertyName As String) As String
+    ' Iterate through common iProperty sets
+    Dim iPropertySets As Array = {"User Defined Properties"}
+    
+    For Each iPropertySet As String In iPropertySets
+        Dim propSet As PropertySet = oComp.Definition.Document.PropertySets.item(iPropertySet)
+        
+        For Each prop In propSet
+            If prop.Name = CustomiPropertyName Then
+                Return prop.Value.ToString()
+            End If
+        Next
+    Next
+    
+    Return String.Empty ' Return an empty string if not found
+End Function
+
+Function GetParameterValue(oComp As ComponentOccurrence, parameterName As String) As String
+    Try
+        Dim param As Parameter = Nothing
+
+        ' Attempt to get the parameter from ModelParameters
+        Try
+            param = oComp.Definition.Parameters.ModelParameters.Item(parameterName)
+        Catch ex As Exception
+            ' If not found in ModelParameters, attempt UserParameters
+            param = oComp.Definition.Parameters.UserParameters.Item(parameterName)
+        End Try
+
+        ' Return the parameter value if it exists
+        If param IsNot Nothing Then
+            Return param.Value.ToString()
+        Else
+            Throw New Exception("Parameter not found.")
+        End If
+    Catch ex As Exception
+        ' Handle or log the error as needed
+        Return ""  ' Return an empty string if the parameter is not found
+    End Try
+End Function
+
+Function GetParameterUnits(oComp As ComponentOccurrence, parameterName As String) As String
+    Try
+        Dim param As Parameter = Nothing
+
+        ' Attempt to get the parameter from ModelParameters
+        Try
+            param = oComp.Definition.Parameters.ModelParameters.Item(parameterName)
+        Catch ex As Exception
+            ' If not found in ModelParameters, attempt UserParameters
+            param = oComp.Definition.Parameters.UserParameters.Item(parameterName)
+        End Try
+
+        ' Return the parameter's units if the parameter exists
+        If param IsNot Nothing Then
+            Return param.Units
+        Else
+            Throw New Exception("Parameter not found.")
+        End If
+    Catch ex As Exception
+        ' Handle or log the error as needed
+        Return ""  ' Return an empty string if the parameter is not found
+    End Try
+End Function
+
+Function GetUniqueDisplayName(ByVal baseName As String) As String
+    Dim counter As Integer = 1
+
+    While DisplayNameExists(baseName & ":" & counter.ToString())
+        counter += 1
+    End While
+
+    Return baseName & ":" & counter.ToString()
+End Function
+
+Function DisplayNameExists(ByVal nameToCheck As String) As Boolean
+	Dim oAsmDoc As AssemblyDocument = ThisApplication.ActiveDocument
+	For Each oCompOcc As ComponentOccurrence In oAsmDoc.ComponentDefinition.Occurrences
+        If oCompOcc.Name = nameToCheck Then
+            Return True
+        End If
+    Next
+    Return False
+End Function
+
+Function GetSelection(oSelSet As SelectSet) As Collection
+    Dim storedSelections As New Collection
+    For Each item In oSelSet
+        storedSelections.Add(item)
+    Next
+    GetSelection = storedSelections
+End Function
+
+Sub RestoreSelection(ByRef storedSelections As Collection)
+    Dim oAsmDoc As AssemblyDocument
+    oAsmDoc = ThisApplication.ActiveDocument
+    oAsmDoc.SelectSet.Clear()
+    For Each item In storedSelections
+        oAsmDoc.SelectSet.Select(item)
+    Next
+End Sub
+
+Function FormatDate(ByVal inputDate As DateTime, ByVal formatString As String) As String
+    Return inputDate.ToString(formatString)
+End Function
+
+Function GetDateCreatedFromFile(oComp As ComponentOccurrence) As DateTime
+    Dim filePath As String = oComp.ReferencedDocumentDescriptor.FullDocumentName
+    Dim FileInfo As New FileInfo(filePath)
+    Return FileInfo.CreationTime
+End Function
+
+Function GetDateModifiedFromFile(oComp As ComponentOccurrence) As DateTime
+    Dim filePath As String = oComp.ReferencedDocumentDescriptor.FullDocumentName
+    Dim FileInfo As New FileInfo(filePath)
+    Return FileInfo.LastWriteTime
+End Function
+
+Sub FormatLeadingZeros(oSelections As SelectSet)
+    Dim oAsmDoc As Inventor.AssemblyDocument
+    oAsmDoc = ThisApplication.ActiveDocument
+
+    ' Generate a list of display names
+    Dim displayNamesList As String = ""
+    For Each oComp In oSelections
+        displayNamesList &= oComp.Name & vbCrLf
+    Next
+	displayNamesList = TruncateTextBlock(displayNamesList, 30, 41, "", "...", "... List continues here") ' For a max of X lines and Y characters per line
+
+    ' Prompt user for the template
+    Dim template As String = InputBox("Selected Components" & vbCrLf & displayNamesList & vbCrLf & vbCrLf & vbCrLf & "Please enter the formatting template:", "CADMajigs")
+    
+    ' Check for Help input
+    If UCase(template) = "HELP" Then
+        LeadingZerosHelp("You have asked for help","")
+        Exit Sub
+    ElseIf template = "" Then
+        LeadingZerosHelp("Operation cancelled or no template provided. No changes were made.","")
+        Exit Sub
+    End If
+	
+	' Check if the template is purely numeric and adjust it accordingly
+	If IsNumeric(template) Then
+	    template = "A:" & template
+	End If
+
+    On Error GoTo ErrorHandler
+
+    ' Split the template into individual instructions
+    Dim instructions() As String = Split(template, ",")
+
+    ' Cycle through all display names and format as per instructions
+    For Each oComp In oSelections
+        Dim formattedName As String = oComp.Name.Substring(0, oComp.Name.LastIndexOf(":"))
+        
+        For Each instruction As String In instructions
+            Dim parts() As String = Split(instruction, ":")
+            Dim indexOrAllOrTruncate As String = parts(0)
+            Dim lengthInfo As String = parts(1)
+            
+            ' Check if the instruction is "A" for all numbers
+            If indexOrAllOrTruncate.ToUpper() = "A" Then
+                formattedName = ReplaceAllNumbers(formattedName, lengthInfo)
+            Else
+                Dim index As Integer = CInt(indexOrAllOrTruncate)
+
+                ' Extract the nth or nth from last number from the formattedName
+                Dim numberToFormat As String = GetNthNumber(formattedName, index)
+                
+                If numberToFormat = "" Then Continue For
+                
+                ' Format the number
+                Dim formattedNumber As String = FormatNumber(numberToFormat, lengthInfo)
+                
+                ' Replace the original number with the formatted one
+                formattedName = ReplaceNthNumber(formattedName, index, formattedNumber)
+            End If
+        Next
+
+        ' Update the component's display name if it has changed
+        If oComp.Name <> formattedName Then
+            oComp.Name = GetUniqueDisplayName(formattedName)
+        End If
+    Next
+
+    Exit Sub
+ErrorHandler:
+    ' If an error occurs, display the help message
+        LeadingZerosHelp("That is not a valid template!","")
+End Sub
+
+Function TruncateTextBlock(ByVal textBlock As String, ByVal maxLines As Integer, ByVal maxCharsPerLine As Integer, prefixContent As String, inlineSuffix As String, suffixContent As String) As String
+    Dim truncatedTextBlock As String
+    Dim lineCount As Integer
+
+    ' Split the list into individual lines
+    Dim lines() As String = Split(textBlock, vbCrLf)
+    
+	Dim i As Integer
+    ' Check each line and account for wrapping
+    For i = 0 To UBound(lines)
+        Dim wrappedLines As Integer
+        
+        ' Calculate how many lines this particular line would wrap into
+        wrappedLines = Ceiling(Len(lines(i)) / maxCharsPerLine)
+        
+        ' If adding these wrapped lines would exceed the maximum, break out
+        If lineCount + wrappedLines > maxLines Then
+            Exit For
+        End If
+        
+        ' Otherwise, append to the truncatedList and increase the count
+        truncatedTextBlock &= lines(i) & vbCrLf
+        lineCount = lineCount + wrappedLines
+    Next i
+    
+    ' If there are more lines remaining, add the ellipsis to indicate truncation
+    If i < UBound(lines) Then
+        truncatedTextBlock = Left(truncatedTextBlock, Len(truncatedTextBlock) - Len(vbCrLf)) ' Remove the last newline
+        truncatedTextBlock &= inlineSuffix
+	    If prefixContent <> "" Then truncatedTextBlock = prefixContent & vbCrLf & vbCrLf & truncatedTextBlock
+	    If suffixContent <> "" Then truncatedTextBlock = truncatedTextBlock & vbCrLf & vbCrLf & suffixContent
+    End If
+		
+    ' Return the truncated list
+    Return truncatedTextBlock
+End Function
+
+Function Ceiling(ByVal num As Double) As Integer
+    ' A helper function to round up to the nearest whole number
+    Ceiling = -Int(-num)
+End Function
+
+Function FormatNumber(numberToFormat As String, length As String) As String
+	If length.StartsWith("P") Then Return numberToFormat.PadLeft(CInt(length.Substring(1)), "0"c)
+	Return CInt(numberToFormat).ToString().PadLeft(CInt(length), "0"c)
+End Function
+
+Function ReplaceAllNumbers(inputStr As String, lengthInfo As String) As String
+    Dim result As String = ""
+    Dim currentNumber As String = ""
+
+    For Each character As Char In inputStr
+        If Char.IsDigit(character) Then
+            currentNumber &= character
+        Else
+            If currentNumber <> "" Then
+                result &= FormatNumber(currentNumber, lengthInfo)
+                currentNumber = ""
+            End If
+            result &= character
+        End If
+    Next
+
+    ' Handle the last number if present
+    If currentNumber <> "" Then
+        result &= FormatNumber(currentNumber, lengthInfo)
+    End If
+
+    Return result
+End Function
+
+Function GetNthNumber(inputStr As String, n As Integer) As String
+    Dim Regex As New System.Text.RegularExpressions.Regex("\d+")
+    Dim matches As System.Text.RegularExpressions.MatchCollection = Regex.Matches(inputStr)
+    Dim numberCount As Integer = matches.Count
+
+    ' Return empty string if there are no matches or if the n value is invalid.
+    If numberCount = 0 Then Return ""
+
+    If n = 0 Then Return  ""
+	
+    If n > 0 Then' If n is positive, fetch the nth number.
+        If n <= numberCount Then Return matches(n - 1).Value
+        Return "" ' Return empty if n is greater than the count of numbers
+	End If
+    If Abs(n) <= numberCount Then Return matches(numberCount + n).Value
+	
+    Return ""
+End Function
+
+Function ReplaceNthNumber(inputStr As String, n As Integer, replacement As String) As String
+	If n=0 Then Return inputStr
+
+	Dim Regex As New System.Text.RegularExpressions.Regex("\d+")
+	Dim matches As System.Text.RegularExpressions.MatchCollection = Regex.Matches(inputStr)
+    Dim numberCount As Integer = matches.Count
+
+    ' If there are no matches or the index is out of range, return the original string.
+    If numberCount = 0 Then Return inputStr
+	If n > Math.Abs(numberCount) Then Return inputStr
+        
+    ' Determine the actual index based on the value of n.
+	Dim actualIndex As Integer = IIf(n > 0, n - 1, numberCount + n)
+
+    ' Split the input string at the position of the number to replace.
+    Dim prefix As String = inputStr.Substring(0, matches(actualIndex).Index)
+    Dim suffix As String = inputStr.Substring(matches(actualIndex).Index + matches(actualIndex).Length)
+
+    ' Rebuild the string with the replacement value.
+    Return prefix & replacement & suffix
+End Function
+
+Sub LeadingZerosHelp(PrefixContent As String, SuffixContent As String)
+    Dim messageContent As String
+    
+    messageContent = "TEMPLATE INSTRUCTIONS:" & vbCrLf & _
+                     vbCrLf & _
+                     "- The template uses a comma to separate different instructions." & vbCrLf & _
+                     "- Each instruction has two parts, divided by a colon." & vbCrLf & _
+                     "- The first part tells which number in the name to target. Start counting from 1. Use ""A"" to target all numbers or just provide a single number to target all numbers with the specified length." & vbCrLf & _
+                     "- The second part states how long the number should be. If it starts with ""P"", the original leading zeros will be preserved while ensuring the specified length." & vbCrLf & _
+                     vbCrLf & _
+                     "EXAMPLES:" & vbCrLf & _
+                     vbCrLf & _
+                     "1. ""3""" & vbCrLf & _
+                     "   This instruction pads all numbers in the name with zeros until each has 3 digits." & vbCrLf & _
+                     "   Example: ""Bracket12Assembly34"" changes to ""Bracket012Assembly034""." & vbCrLf & _
+                     vbCrLf & _
+                     "2. ""1:3""" & vbCrLf & _
+                     "   This instruction pads the first number in the name with zeros until it has 3 digits." & vbCrLf & _
+                     "   Example: ""Assembly12Part34"" turns into ""Assembly012Part34""." & vbCrLf & _
+                     vbCrLf & _
+                     "3. ""A:4""" & vbCrLf & _
+                     "   This targets all numbers, making them all 4 digits long by adding zeros." & vbCrLf & _
+                     "   Example: ""Bracket12Assembly34"" changes to ""Bracket0012Assembly0034""." & vbCrLf & _
+                     vbCrLf & _
+                     "4. ""1:P3""" & vbCrLf & _
+                     "   This will preserve the leading zeros of the first number, ensuring it has at least 3 digits." & vbCrLf & _
+                     "   Example: ""Assembly12Part34"" changes to ""Assembly012Part34"". However, ""Component0004Bracket34"" remains ""Component0004Bracket34""." & vbCrLf & _
+                     vbCrLf & _
+                     "5. ""-2:4""" & vbCrLf & _
+                     "   This instruction pads the second to last number in the name with zeros until it has 4 digits." & vbCrLf & _
+                     "   Example: ""Block12Rev34Type7"" changes to ""Block12Rev0034Type7""." & vbCrLf & _
+                     vbCrLf & _
+                     "6. ""A:4,-1:3""" & vbCrLf & _
+                     "   This combines instructions A:4 and -1:3." & vbCrLf & _
+                     "   First A:4 targets all numbers, making them all 4 digits long by adding zeros." & vbCrLf & _
+                     "   Then -1:3 targets the last number, making the number 3 digits long." & vbCrLf & _
+                     "   Example: ""Assembly12Type7Part34"" changes to ""Assembly0012Type0007Part034""."
+
+    If PrefixContent <> "" Then messageContent = PrefixContent & vbCrLf  & vbCrLf & messageContent
+    If SuffixContent <> "" Then messageContent = messageContent & vbCrLf  & vbCrLf & SuffixContent
+
+    MessageBox.Show(messageContent, "CADMajigs - Leading Zero Instructions")
+End Sub
