@@ -1,0 +1,51 @@
+Sub main()
+
+    ' Obtem o documento de desenho atual
+    Dim oDoc As DrawingDocument = ThisDoc.Document
+
+    ' Seleciona uma vista do desenho
+    Dim oView As DrawingView
+    oView = ThisApplication.CommandManager.Pick(SelectionFilterEnum.kDrawingViewFilter, "Selecione uma vista do desenho")
+    If oView Is Nothing Then Exit Sub
+
+    ' Caminho completo do modelo atual referenciado pela vista
+    Dim oFullFilename As String
+    oFullFilename = oView.ReferencedDocumentDescriptor.ReferencedDocument.FullFileName
+
+    ' Abre o diálogo de seleção de arquivo
+    Dim oFileDlg As Inventor.FileDialog = Nothing
+    InventorVb.Application.CreateFileDialog(oFileDlg)
+    oFileDlg.Filter = "Inventor Files (*.iam;*.ipt)|*.iam;*.ipt|All Files (*.*)|*.*"
+    oFileDlg.DialogTitle = "Selecione o novo modelo"
+    oFileDlg.InitialDirectory = ThisDoc.Path
+    oFileDlg.CancelError = True
+
+    On Error Resume Next
+    oFileDlg.ShowOpen()
+    If Err.Number <> 0 Or oFileDlg.FileName = "" Then
+        MsgBox("Operação cancelada.")
+        Exit Sub
+    End If
+    On Error GoTo 0
+
+    Dim NewFullFilename As String = oFileDlg.FileName
+
+    ' Chama a sub que substitui a referência
+    Call ReplaceFileReference(oDoc, oFullFilename, NewFullFilename)
+
+    ' Atualiza o documento e vistas
+    oDoc.Update()
+    iLogicVb.UpdateWhenDone = True
+
+End Sub
+
+Sub ReplaceFileReference(oDoc As Document, oRefToRemove As String, oRefToInclude As String)
+
+    ' Percorre os arquivos referenciados no documento
+    For Each oFD As FileDescriptor In oDoc.File.ReferencedFileDescriptors
+        If oFD.FullFileName = oRefToRemove Then
+            oFD.ReplaceReference(oRefToInclude)
+        End If
+    Next
+
+End Sub
