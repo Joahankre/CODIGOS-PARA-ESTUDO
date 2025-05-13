@@ -1,0 +1,147 @@
+Imports System.Windows.Forms
+' IMPORTA CONTROLES DE FORMULÁRIO
+
+' FORMULÁRIO PERSONALIZADO
+Class iPropForm
+    Inherits Form
+
+    Public txtTitulo As New System.Windows.Forms.TextBox()
+    Public txtDescricao As New System.Windows.Forms.TextBox()
+    Public txtAutor As New System.Windows.Forms.TextBox()
+    Public txtMaterial As New System.Windows.Forms.TextBox()
+    Public cboAcabamento As New System.Windows.Forms.ComboBox()
+    Public txtCodigo As New System.Windows.Forms.TextBox()
+    Public btnOk As New System.Windows.Forms.Button()
+
+    Public Sub New()
+        Me.Text = "Editar iProperties"
+        Me.Width = 350
+        Me.Height = 320
+        Me.FormBorderStyle = FormBorderStyle.FixedDialog
+        Me.StartPosition = FormStartPosition.CenterScreen
+
+        Dim lblTitulo As New System.Windows.Forms.Label() With {.Text = "Título:", .Left = 10, .Top = 20, .Width = 100}
+        txtTitulo.SetBounds(120, 20, 200, 20)
+
+        Dim lblDescricao As New System.Windows.Forms.Label() With {.Text = "Descrição:", .Left = 10, .Top = 50, .Width = 100}
+        txtDescricao.SetBounds(120, 50, 200, 20)
+
+        Dim lblAutor As New System.Windows.Forms.Label() With {.Text = "Autor:", .Left = 10, .Top = 80, .Width = 100}
+        txtAutor.SetBounds(120, 80, 200, 20)
+
+        Dim lblMaterial As New System.Windows.Forms.Label() With {.Text = "Material:", .Left = 10, .Top = 110, .Width = 100}
+        txtMaterial.SetBounds(120, 110, 200, 20)
+
+        Dim lblAcabamento As New System.Windows.Forms.Label() With {.Text = "Acabamento:", .Left = 10, .Top = 140, .Width = 100}
+        cboAcabamento.SetBounds(120, 140, 200, 20)
+        cboAcabamento.DropDownStyle = ComboBoxStyle.DropDownList
+        cboAcabamento.Items.AddRange(New String() {
+            "ANODIZADO CLARO",
+            "ANODIZADO ESCURO",
+            "TREME-TREME",
+            "JATEADO",
+            "USINADO",
+            "POLIDO"
+        })
+
+        Dim lblCodigo As New System.Windows.Forms.Label() With {.Text = "Código da Peça:", .Left = 10, .Top = 170, .Width = 100}
+        txtCodigo.SetBounds(120, 170, 200, 20)
+
+        btnOk.Text = "Aplicar"
+        btnOk.SetBounds(120, 210, 100, 30)
+        btnOk.DialogResult = DialogResult.OK
+
+        Me.Controls.AddRange(New Control() {
+            lblTitulo, txtTitulo,
+            lblDescricao, txtDescricao,
+            lblAutor, txtAutor,
+            lblMaterial, txtMaterial,
+            lblAcabamento, cboAcabamento,
+            lblCodigo, txtCodigo,
+            btnOk
+        })
+
+        Me.AcceptButton = btnOk
+    End Sub
+End Class
+
+' CÓDIGO PRINCIPAL
+Sub Main()
+    ' Verifica se o documento ativo é um desenho
+    If ThisApplication.ActiveDocumentType <> DocumentTypeEnum.kDrawingDocumentObject Then
+        MessageBox.Show("Abra um desenho (.idw) antes de rodar esta regra.", "Erro")
+        Return
+    End If
+
+    Dim oDrawDoc As DrawingDocument = ThisApplication.ActiveDocument
+    Dim oSheet As Sheet = oDrawDoc.ActiveSheet
+
+    ' Verifica se há vistas na folha
+    If oSheet.DrawingViews.Count = 0 Then
+        MessageBox.Show("A folha ativa não contém vistas.", "Erro")
+        Return
+    End If
+
+    ' Usa a primeira vista como referência
+    Dim oView As DrawingView = oSheet.DrawingViews.Item(1)
+    Dim oRefDoc As Document
+
+    Try
+        oRefDoc = oView.ReferencedDocumentDescriptor.ReferencedDocument
+    Catch ex As Exception
+        MessageBox.Show("Erro ao acessar o modelo referenciado: " & ex.Message, "Erro")
+        Return
+    End Try
+
+    ' Obtém os PropertySets
+    Dim summaryProps As PropertySet = oRefDoc.PropertySets.Item("Inventor Summary Information")
+    Dim customProps As PropertySet = oRefDoc.PropertySets.Item("Inventor User Defined Properties")
+    Dim designProps As PropertySet = oRefDoc.PropertySets.Item("Design Tracking Properties")
+
+    ' Cria e preenche o formulário
+    Dim form As New iPropForm()
+    form.txtTitulo.Text = summaryProps.Item("Title").Value
+    form.txtDescricao.Text = summaryProps.Item("Subject").Value
+    form.txtAutor.Text = summaryProps.Item("Author").Value
+
+    Try
+        form.txtMaterial.Text = customProps.Item("MATERIAL").Value
+    Catch
+        form.txtMaterial.Text = ""
+    End Try
+
+    Try
+        form.cboAcabamento.SelectedItem = customProps.Item("ACABAMENTO").Value
+    Catch
+        form.cboAcabamento.SelectedIndex = 0
+    End Try
+
+    Try
+        form.txtCodigo.Text = designProps.Item("Part Number").Value
+    Catch
+        form.txtCodigo.Text = ""
+    End Try
+
+    ' Exibe o formulário e aplica alterações
+    If form.ShowDialog() = DialogResult.OK Then
+        summaryProps.Item("Title").Value = form.txtTitulo.Text
+        summaryProps.Item("Subject").Value = form.txtDescricao.Text
+        summaryProps.Item("Author").Value = form.txtAutor.Text
+
+        Try
+            customProps.Item("MATERIAL").Value = form.txtMaterial.Text
+        Catch
+            customProps.Add(form.txtMaterial.Text, "MATERIAL")
+        End Try
+
+        Try
+            customProps.Item("ACABAMENTO").Value = form.cboAcabamento.SelectedItem.ToString()
+        Catch
+            customProps.Add(form.cboAcabamento.SelectedItem.ToString(), "ACABAMENTO")
+        End Try
+
+        designProps.Item("Part Number").Value = form.txtCodigo.Text
+
+        MessageBox.Show("iProperties atualizadas com sucesso!", "Concluído")
+    End If
+End Sub
