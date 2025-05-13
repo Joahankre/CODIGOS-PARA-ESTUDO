@@ -1,0 +1,84 @@
+Sub Main()
+    Dim oAsm As AssemblyDocument = ThisApplication.ActiveDocument
+    If oAsm.DocumentType <> DocumentTypeEnum.kAssemblyDocumentObject Then
+        MsgBox("Este script deve ser executado com uma montagem ativa.", vbExclamation)
+        Exit Sub
+    End If
+
+    ' Habilita BOM estruturada
+    Dim oBOM As BOM = oAsm.ComponentDefinition.BOM
+    oBOM.StructuredViewEnabled = True
+    oBOM.StructuredViewFirstLevelOnly = False
+
+    Dim oBOMView As BOMView = oBOM.BOMViews.Item("Structured")
+
+    ' Inicializa contador
+    Dim itemCounter As Integer = 1
+
+    ' Inicia a organização e renumeração recursiva
+    OrganizarEBOM(oBOMView.BOMRows, itemCounter, 0)
+
+    MsgBox("Renumeração concluída com sucesso.", vbInformation)
+End Sub
+
+Sub OrganizarEBOM(ByVal oBOMRows As BOMRowsEnumerator, ByRef contador As Integer, ByVal indent As Integer)
+
+    Dim montagensNormais As New List(Of BOMRow)
+    Dim pecasNormais As New List(Of BOMRow)
+    Dim outros As New List(Of BOMRow)
+
+    ' Classificar em 3 grupos conforme a estrutura e tipo
+    For Each row As BOMRow In oBOMRows
+        If Row.ComponentDefinitions.Count = 0 Then Continue For
+
+        Dim def As ComponentDefinition = Row.ComponentDefinitions(1)
+        Dim isMontagem As Boolean = (def.Type = ObjectTypeEnum.kAssemblyComponentDefinitionObject)
+        Dim isNormal As Boolean = (Row.BOMStructure = BOMStructureEnum.kNormalBOMStructure)
+
+        If isMontagem And isNormal Then
+            montagensNormais.Add(Row)
+        ElseIf Not isMontagem And isNormal Then
+            pecasNormais.Add(Row)
+        Else
+            outros.Add(Row)
+        End If
+    Next
+
+    ' Ordenação secundária por DisplayName
+    montagensNormais.Sort(Function(a, b)
+        Return a.ComponentDefinitions(1).Document.DisplayName.CompareTo(b.ComponentDefinitions(1).Document.DisplayName)
+    End Function)
+    pecasNormais.Sort(Function(a, b)
+        Return a.ComponentDefinitions(1).Document.DisplayName.CompareTo(b.ComponentDefinitions(1).Document.DisplayName)
+    End Function)
+    outros.Sort(Function(a, b)
+        Return a.ComponentDefinitions(1).Document.DisplayName.CompareTo(b.ComponentDefinitions(1).Document.DisplayName)
+    End Function)
+
+    ' Combinar as listas na ordem desejada
+    Dim ordenados As New List(Of BOMRow)
+    ordenados.AddRange(montagensNormais)
+    ordenados.AddRange(pecasNormais)
+    ordenados.AddRange(outros)
+
+    ' Renumeração e chamada recursiva
+    For Each row As BOMRow In ordenados
+        Row.ItemNumber = contador.ToString()
+        contador += 1
+
+        ' Para visualização no Logger
+        Dim partNumber As String = ""
+        Try
+            partNumber = Row.ComponentDefinitions(1).Document.PropertySets("Design Tracking Properties")("Part Number").Value
+        Catch
+            partNumber = "(sem número)"
+        End Try
+
+        Logger.Info(New String(" "c, indent * 2) & Row.ItemNumber & " - " & partNumber)
+
+        ' Chamada recursiva para os filhos
+        If Row.ChildRows IsNot Nothing AndAlso Row.ChildRows.Count > 0 Then
+            OrganizarEBOM(Row.ChildRows, contador, indent + 1)
+        End If
+    Next
+End Sub
