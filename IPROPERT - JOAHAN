@@ -35,25 +35,26 @@ Sub Main()
     Dim codigo As String = GetPropertyValue(designProps, "Part Number")
     Dim stockNumber As String = GetPropertyValue(designProps, "Stock Number")
     Dim descricao As String = GetPropertyValue(designProps, "Description")
+    Dim qtdePersonalizada As String = GetPropertyValue(customProps, "QTDE Personalizada")
 
     ' Formulário
     Dim painel As New System.Windows.Forms.Form With {
         .Text = "Editar iProperties",
         .Width = 850,
-        .Height = 750,
+        .Height = 850,
         .StartPosition = FormStartPosition.CenterScreen
     }
 
     Dim larguraCaixa As Integer = 800
-    Dim margemEsquerda As Integer = 20
+    Dim margemEsquerda As Integer = 10
     Dim linha As Integer = 10
-    Dim altura As Integer = 35
+    Dim altura As Integer = 30
 
     ' Campos
     Dim lblTitulo = NovaLabel("Título:", linha, margemEsquerda) : linha += altura
     Dim txtTitulo = NovaTextBox(titulo, linha, larguraCaixa, margemEsquerda) : linha += altura
 
-    Dim lblSubtitulo = NovaLabel("Subtítulo:", linha, margemEsquerda) : linha += altura
+    Dim lblSubtitulo = NovaLabel("Assunto:", linha, margemEsquerda) : linha += altura
     Dim txtSubtitulo = NovaTextBox(subtitulo, linha, larguraCaixa, margemEsquerda) : linha += altura
 
     Dim lblDescricao = NovaLabel("Descrição:", linha, margemEsquerda) : linha += altura
@@ -70,6 +71,9 @@ Sub Main()
 
     Dim lblMaterial = NovaLabel("PN2:", linha, margemEsquerda) : linha += altura
     Dim txtMaterial = NovaTextBox(material, linha, larguraCaixa, margemEsquerda) : linha += altura
+
+    Dim lblQtdePersonalizada = NovaLabel("QTDE Personalizada:", linha, margemEsquerda) : linha += altura
+    Dim txtQtdePersonalizada = NovaTextBox(qtdePersonalizada, linha, larguraCaixa, margemEsquerda) : linha += altura
 
     Dim lblAcabamento = NovaLabel("Acabamento:", linha, margemEsquerda) : linha += altura
     Dim cboAcabamento As New System.Windows.Forms.ComboBox With {
@@ -94,9 +98,9 @@ Sub Main()
         "09 - UF - USINAGEM INOX EXTERNO NA FRIMEC", "10 - CO - COMERCIAL", "11 - CS - COMERCIAL SERRA FITA"
     })
     cboCategoria.SelectedItem = If(categoria <> "", categoria, cboCategoria.Items(0))
-    linha += altura
+    linha += altura + 10
 
-    linha += 10
+    ' Botão aplicar
     Dim btnAplicar As New System.Windows.Forms.Button With {
         .Text = "Aplicar", .Top = linha, .Left = margemEsquerda, .Width = larguraCaixa
     }
@@ -111,6 +115,7 @@ Sub Main()
         designProps.Item("Stock Number").Value = txtEstoque.Text
 
         AtualizarOuAdicionar(customProps, "PN2", txtMaterial.Text)
+        AtualizarOuAdicionar(customProps, "QTDE Personalizada", txtQtdePersonalizada.Text)
         AtualizarOuAdicionar(customProps, "ACABAMENTO", cboAcabamento.SelectedItem.ToString())
         AtualizarOuAdicionar(customProps, "CATEGORIA", cboCategoria.SelectedItem.ToString())
 
@@ -118,6 +123,7 @@ Sub Main()
         painel.Close()
     End Sub
 
+    ' Adiciona os controles ao painel
     painel.Controls.AddRange(New Control() {
         lblTitulo, txtTitulo,
         lblSubtitulo, txtSubtitulo,
@@ -126,6 +132,7 @@ Sub Main()
         lblEstoque, txtEstoque,
         lblAutor, txtAutor,
         lblMaterial, txtMaterial,
+        lblQtdePersonalizada, txtQtdePersonalizada,
         lblAcabamento, cboAcabamento,
         lblCategoria, cboCategoria,
         btnAplicar
@@ -148,6 +155,11 @@ End Function
 Function GetPropertyValue(props As PropertySet, propName As String) As String
     Try : Return props.Item(propName).Value.ToString() : Catch : Return "" : End Try
 End Function
+
+' Atualiza ou adiciona uma propriedade personalizada
+Sub AtualizarOuAdicionar(props As PropertySet, propName As String, value As String)
+    Try : props.Item(propName).Value = value : Catch : props.Add(value, propName) : End Try
+End Sub
 
 ' Atualiza ou adiciona uma propriedade personalizada
 Sub AtualizarOuAdicionar(props As PropertySet, propName As String, value As String)
