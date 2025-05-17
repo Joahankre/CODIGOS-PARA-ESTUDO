@@ -50,7 +50,14 @@ Sub Main()
     Dim linha As Integer = 10
     Dim altura As Integer = 30
 
-    ' Campos
+    ' Nome do arquivo IPT/IAM (somente leitura)
+    Dim nomeArquivo As String = System.IO.Path.GetFileName(oRefDoc.FullFileName)
+    Dim lblArquivo = NovaLabel("Arquivo de origem (.ipt/.iam):", linha, margemEsquerda) : linha += altura
+    Dim txtArquivo = NovaTextBox(nomeArquivo, linha, larguraCaixa, margemEsquerda)
+    txtArquivo.ReadOnly = True
+    linha += altura + 10
+
+    ' Campos de edição
     Dim lblTitulo = NovaLabel("Título:", linha, margemEsquerda) : linha += altura
     Dim txtTitulo = NovaTextBox(titulo, linha, larguraCaixa, margemEsquerda) : linha += altura
 
@@ -100,10 +107,14 @@ Sub Main()
     cboCategoria.SelectedItem = If(categoria <> "", categoria, cboCategoria.Items(0))
     linha += altura + 10
 
-    ' Botão aplicar
-    Dim btnAplicar As New System.Windows.Forms.Button With {
-        .Text = "Aplicar", .Top = linha, .Left = margemEsquerda, .Width = larguraCaixa
-    }
+  Dim btnAplicar As New System.Windows.Forms.Button With {
+    .Text = "Aplicar",
+    .Top = linha,
+    .Left = margemEsquerda,
+    .Width = larguraCaixa,
+    .Height = 40  ' Aumenta a altura do botão
+}
+
 
     AddHandler btnAplicar.Click, Sub()
         summaryProps.Item("Title").Value = txtTitulo.Text
@@ -123,8 +134,8 @@ Sub Main()
         painel.Close()
     End Sub
 
-    ' Adiciona os controles ao painel
     painel.Controls.AddRange(New Control() {
+        lblArquivo, txtArquivo,
         lblTitulo, txtTitulo,
         lblSubtitulo, txtSubtitulo,
         lblDescricao, txtDescricao,
@@ -153,19 +164,11 @@ End Function
 
 ' Recupera o valor de uma iProperty
 Function GetPropertyValue(props As PropertySet, propName As String) As String
-    Try
-        Return props.Item(propName).Value.ToString()
-    Catch
-        Return ""
-    End Try
+    Try : Return props.Item(propName).Value.ToString() : Catch : Return "" : End Try
 End Function
 
 ' Atualiza ou adiciona uma propriedade personalizada
 Sub AtualizarOuAdicionar(props As PropertySet, propName As String, value As String)
-    Try
-        props.Item(propName).Value = value
-    Catch
-        props.Add(value, propName)
-    End Try
+    Try : props.Item(propName).Value = value : Catch : props.Add(value, propName) : End Try
 End Sub
 
