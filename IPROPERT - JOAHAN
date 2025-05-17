@@ -153,15 +153,19 @@ End Function
 
 ' Recupera o valor de uma iProperty
 Function GetPropertyValue(props As PropertySet, propName As String) As String
-    Try : Return props.Item(propName).Value.ToString() : Catch : Return "" : End Try
+    Try
+        Return props.Item(propName).Value.ToString()
+    Catch
+        Return ""
+    End Try
 End Function
 
 ' Atualiza ou adiciona uma propriedade personalizada
 Sub AtualizarOuAdicionar(props As PropertySet, propName As String, value As String)
-    Try : props.Item(propName).Value = value : Catch : props.Add(value, propName) : End Try
+    Try
+        props.Item(propName).Value = value
+    Catch
+        props.Add(value, propName)
+    End Try
 End Sub
 
-' Atualiza ou adiciona uma propriedade personalizada
-Sub AtualizarOuAdicionar(props As PropertySet, propName As String, value As String)
-    Try : props.Item(propName).Value = value : Catch : props.Add(value, propName) : End Try
-End Sub
