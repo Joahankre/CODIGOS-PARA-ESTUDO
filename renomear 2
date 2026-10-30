@@ -1,0 +1,1475 @@
+Imports System.IO
+Imports System.Text.RegularExpressions
+
+Sub Main()
+
+    ' Declarar os namespaces necessários
+    Dim oAsmDoc As AssemblyDocument
+    Dim oSelections As SelectSet
+    Dim selectedComponents As String = ""
+    Dim initialSelections As Collection
+
+    ' Obter o documento de montagem ativo
+    oAsmDoc = ThisApplication.ActiveDocument
+
+    If oAsmDoc.DocumentType <> DocumentTypeEnum.kAssemblyDocumentObject Then
+        MessageBox.Show("Este código iLogic deve ser executado em um documento de montagem!", "CADMajigs")
+        Exit Sub
+    End If
+
+    oSelections = oAsmDoc.SelectSet
+
+    ' Criar uma nova transação
+    Dim oTransMgr As TransactionManager
+    oTransMgr = ThisApplication.TransactionManager
+    Dim oTrans As Transaction
+    oTrans = oTransMgr.StartTransaction(oAsmDoc, "Operação CADMajigs")
+
+    Try
+
+        ' Verificar se algum componente está selecionado
+        If oSelections.Count = 0 Then
+            Dim result As DialogResult = MessageBox.Show("Nenhum componente selecionado! Deseja selecionar todos os componentes?", "CADMajigs", MessageBoxButtons.YesNo)
+
+            If result = DialogResult.Yes Then
+
+                oSelections.Clear()
+
+                For Each oComp As ComponentOccurrence In oAsmDoc.ComponentDefinition.Occurrences
+                    ThisApplication.ActiveDocument.SelectSet.Select(oComp)
+                Next
+
+                ' Verificar se existem componentes na montagem
+                If oSelections.Count = 0 Then
+                    MessageBox.Show("Não existem componentes nesta montagem.", "CADMajigs")
+                    Exit Sub
+                End If
+            Else
+                Exit Sub
+            End If
+        End If
+
+        ' Armazenar a seleção atual para restaurá-la posteriormente
+        initialSelections = GetSelection(oSelections)
+
+        ' Percorrer a seleção e coletar os nomes dos componentes
+        For Each oObj In oSelections
+            If TypeOf oObj Is ComponentOccurrence Then
+                Dim oComp As ComponentOccurrence
+                oComp = oObj
+                selectedComponents = selectedComponents & oComp.Name & vbCrLf
+            End If
+        Next
+
+        selectedComponents = TruncateTextBlock(selectedComponents, 30, 41, "", "...", "... A lista continua aqui")
+
+        optionsList = New String() {
+            "Não fazer nada (Cancelar)",
+            "Renomear nomes de exibição",
+            "Substituir texto nos nomes de exibição",
+            "Nomes de exibição usando modelo personalizado",
+            "Adicionar zeros à esquerda nos nomes de exibição",
+            "Renomear nomes de exibição para corresponder aos nomes dos arquivos",
+            "Renomear nomes dos arquivos para corresponder aos nomes de exibição"
+        }
+
+        Dim prompt As String = "Selecione a opção que deseja aplicar aos seguintes arquivos:" & vbCrLf & vbCrLf & selectedComponents & vbCrLf
+        Dim userChoice As String
+
+        userChoice = InputListBox(prompt, optionsList, optionsList(0), Title := "CADMajigs", ListName := "Opções disponíveis")
+
+        ' Executar a ação de acordo com a opção selecionada
+        Select Case userChoice
+
+            Case optionsList(0)
+                ' Não fazer nada
+
+            Case optionsList(1)
+                RenameDisplayNames(oSelections)
+
+            Case optionsList(2)
+                DisplayNamesSubstitute(oSelections)
+
+            Case optionsList(3)
+                DisplayNamesUsingTemplate(oSelections)
+
+            Case optionsList(4)
+                FormatLeadingZeros(oSelections)
+
+            Case optionsList(5)
+                RenameDisplayNamesToMatchFilenames(oSelections)
+
+            Case optionsList(6)
+                RenameFilenamesToMatchDisplayNames(oSelections)
+
+            Case Else
+                ' Nenhuma ação reconhecida foi selecionada
+
+        End Select
+
+        ' Atualizar o modelo do Inventor
+        ThisDoc.Document.Rebuild()
+        ThisApplication.ActiveView.Update()
+
+        ' Confirmar a transação ao final do código
+        oTrans.End
+
+    Catch ex As Exception
+
+        ' Desfazer a transação caso ocorra algum erro
+        oTrans.Abort()
+        MessageBox.Show("Ocorreu um erro: " & ex.Message)
+
+    End Try
+
+    ' Restaurar a seleção inicial
+    RestoreSelection(initialSelections)
+
+End Sub
+
+
+Sub RenameDisplayNames(ByVal oSelection As SelectSet)
+
+    Dim oAsmDoc As AssemblyDocument
+    oAsmDoc = ThisApplication.ActiveDocument
+
+    Dim groupSimilarFiles As DialogResult = MessageBox.Show("Deseja agrupar arquivos semelhantes?", "CADMajigs", MessageBoxButtons.YesNo)
+
+    Dim handledPaths As New Dictionary(Of String, String)
+
+    For Each oObj In oSelection
+
+        If TypeOf oObj Is ComponentOccurrence Then
+
+            Dim oComp As ComponentOccurrence
+            oComp = oObj
+
+            Dim currentPath As String = oComp.ReferencedDocumentDescriptor.FullDocumentName
+
+            If groupSimilarFiles = DialogResult.Yes And handledPaths.ContainsKey(currentPath) Then
+
+                ' Se o caminho já foi processado, utilizar o nome anteriormente atribuído
+                oComp.Name = GetUniqueDisplayName(handledPaths(currentPath))
+                Continue For
+
+            End If
+
+            ' Verificar se existe um sufixo e removê-lo
+            Dim displayName As String = oComp.Name
+
+            If displayName.Contains(":") Then
+                displayName = displayName.Substring(0, displayName.LastIndexOf(":"))
+            End If
+
+            Dim newName As String = InputBox("Renomear componente:" & vbCrLf & vbCrLf & oComp.Name, "CADMajigs", displayName)
+
+            If newName <> "" Then
+                handledPaths(currentPath) = newName
+                oComp.Name = GetUniqueDisplayName(newName)
+            End If
+
+        End If
+
+    Next
+
+End Sub
+
+Sub RenameFilenamesToMatchDisplayNames(ByVal oSelection As SelectSet)
+
+    Dim oAsmDoc As AssemblyDocument
+    oAsmDoc = ThisApplication.ActiveDocument
+
+    ' Armazenar os nomes de exibição já processados e os novos caminhos dos arquivos
+    Dim handledDisplayNames As New Dictionary(Of String, String)
+
+    For Each oObj In oSelection
+
+        If TypeOf oObj Is ComponentOccurrence Then
+
+            Dim oComp As ComponentOccurrence
+            oComp = oObj
+
+            Dim currentPath As String = oComp.ReferencedDocumentDescriptor.FullDocumentName
+            Dim currentDisplayName As String = oComp.Name.Split(":")(0)
+
+            If handledDisplayNames.ContainsKey(currentDisplayName) Then
+
+                ' Substituir pelo arquivo que já foi criado anteriormente
+                oComp.Replace(handledDisplayNames(currentDisplayName), False)
+                Continue For
+
+            End If
+
+            Dim newFilename As String = System.IO.Path.Combine(
+                System.IO.Path.GetDirectoryName(currentPath),
+                currentDisplayName & System.IO.Path.GetExtension(currentPath)
+            )
+
+            ' Verificar se existem caracteres inválidos no nome do arquivo
+            Dim invalidChars As Char() = System.IO.Path.GetInvalidFileNameChars()
+            Dim hasInvalidChars As Boolean = currentDisplayName.IndexOfAny(invalidChars) >= 0
+
+            If hasInvalidChars Then
+
+                Dim result As DialogResult = MessageBox.Show(
+                    "O nome do arquivo contém caracteres inválidos. Deseja remover todos os caracteres não permitidos?",
+                    "CADMajigs",
+                    MessageBoxButtons.YesNo
+                )
+
+                If result = DialogResult.Yes Then
+
+                    Dim newFileNameOnly As String = currentDisplayName
+
+                    For Each c As Char In invalidChars
+                        newFileNameOnly = newFileNameOnly.Replace(c, "")
+                    Next
+
+                    ' Recombinar o nome corrigido com o diretório e a extensão originais
+                    newFilename = System.IO.Path.Combine(
+                        System.IO.Path.GetDirectoryName(currentPath),
+                        newFileNameOnly & System.IO.Path.GetExtension(currentPath)
+                    )
+
+                Else
+
+                    Dim validInput As Boolean = False
+
+                    While Not validInput
+
+                        ' Solicitar um nome de arquivo válido, sem caminho e sem extensão
+                        Dim editedFileName As String = currentDisplayName
+
+                        editedFileName = InputBox(
+                            "Digite um nome de arquivo válido:",
+                            "CADMajigs",
+                            editedFileName
+                        )
+
+                        ' Combinar o nome informado com o caminho e a extensão originais
+                        newFilename = System.IO.Path.Combine(
+                            System.IO.Path.GetDirectoryName(currentPath),
+                            editedFileName & System.IO.Path.GetExtension(currentPath)
+                        )
+
+                        ' Verificar somente o nome informado, não o caminho completo
+                        hasInvalidChars = editedFileName.IndexOfAny(invalidChars) >= 0
+
+                        If Not hasInvalidChars Then
+                            validInput = True
+                        Else
+                            MessageBox.Show(
+                                "O nome do arquivo contém caracteres inválidos. Digite novamente.",
+                                "CADMajigs"
+                            )
+                        End If
+
+                    End While
+
+                End If
+
+            End If
+
+            ' Verificar se o arquivo já existe
+            While System.IO.File.Exists(newFilename)
+
+                Dim overwrite As DialogResult = MessageBox.Show(
+                    newFilename & " já existe. Deseja criar um nome de arquivo exclusivo adicionando um sufixo?",
+                    "CADMajigs",
+                    MessageBoxButtons.YesNo
+                )
+
+                If overwrite = DialogResult.Yes Then
+
+                    Dim counter As Integer = 1
+                    Dim baseName As String = System.IO.Path.GetFileNameWithoutExtension(newFilename)
+                    Dim extension As String = System.IO.Path.GetExtension(newFilename)
+                    Dim directoryPath As String = System.IO.Path.GetDirectoryName(newFilename)
+
+                    ' Encontrar um nome de arquivo exclusivo adicionando um sufixo numérico
+                    While System.IO.File.Exists(newFilename)
+
+                        newFilename = System.IO.Path.Combine(
+                            directoryPath,
+                            baseName & "(" & counter & ")" & extension
+                        )
+
+                        counter += 1
+
+                    End While
+
+                Else
+
+                    Dim filePathWithoutExtension As String =
+                        System.IO.Path.GetDirectoryName(currentPath) & "\" &
+                        System.IO.Path.GetFileNameWithoutExtension(currentPath)
+
+                    Dim fileExtension As String = System.IO.Path.GetExtension(currentPath)
+
+                    ' Solicitar um novo nome até que seja informado um nome exclusivo
+                    Dim fileExists As Boolean = True
+
+                    While fileExists
+
+                        ' Solicitar somente o nome do arquivo, sem caminho e sem extensão
+                        newFilename = InputBox(
+                            "Digite um novo nome para o arquivo:",
+                            "CADMajigs",
+                            System.IO.Path.GetFileNameWithoutExtension(newFilename)
+                        )
+
+                        ' Adicionar o nome informado ao caminho e à extensão originais
+                        newFilename = System.IO.Path.Combine(
+                            System.IO.Path.GetDirectoryName(currentPath),
+                            newFilename & fileExtension
+                        )
+
+                        ' Verificar se o novo caminho já existe
+                        fileExists = System.IO.File.Exists(newFilename)
+
+                        If fileExists Then
+                            MessageBox.Show(
+                                "O nome do arquivo já existe. Escolha outro nome.",
+                                "CADMajigs"
+                            )
+                        End If
+
+                    End While
+
+                End If
+
+            End While
+
+            ' Criar uma cópia do arquivo e substituir o componente pelo novo arquivo
+            System.IO.File.Copy(currentPath, newFilename)
+            oComp.Replace(newFilename, False)
+
+            ' Adicionar o componente à lista de arquivos já processados
+            handledDisplayNames.Add(currentDisplayName, newFilename)
+
+        End If
+
+    Next
+
+End Sub
+
+
+Sub RenameDisplayNamesToMatchFilenames(ByVal Components As SelectSet)
+
+    ' Armazenar a seleção atual para restaurá-la posteriormente
+    Dim initialSelections As Collection
+    initialSelections = GetSelection(Components)
+
+    ' Primeira etapa: renomear todos os componentes temporariamente
+    ' para evitar conflitos entre nomes
+    Dim tempNamePrefix As String = "TempUniqueName_"
+    Dim tempNameCounter As Integer = 1
+
+    For Each oObj In Components
+
+        If TypeOf oObj Is ComponentOccurrence Then
+
+            Dim oComp As ComponentOccurrence
+            oComp = oObj
+
+            While DisplayNameExists(tempNamePrefix & tempNameCounter.ToString())
+                tempNameCounter += 1
+            End While
+
+            oComp.Name = tempNamePrefix & tempNameCounter.ToString()
+            tempNameCounter += 1
+
+        End If
+
+    Next
+
+    RestoreSelection(initialSelections)
+
+    Dim oAsmDoc As AssemblyDocument
+    oAsmDoc = ThisApplication.ActiveDocument
+
+    Components = oAsmDoc.SelectSet
+
+    ' Segunda etapa: limpar os nomes para que o Inventor utilize
+    ' automaticamente os nomes dos arquivos
+    For Each oObj In Components
+
+        If TypeOf oObj Is ComponentOccurrence Then
+
+            Dim oComp As ComponentOccurrence
+            oComp = oObj
+
+            oComp.Name = ""
+
+        End If
+
+    Next
+
+    ' Restaurar a seleção original
+    RestoreSelection(initialSelections)
+
+End Sub
+
+
+Sub DisplayNamesSubstitute(oSelections As SelectSet)
+
+    Dim oAsmDoc As Inventor.AssemblyDocument
+    oAsmDoc = ThisApplication.ActiveDocument
+
+    ' Gerar uma lista com os nomes de exibição
+    Dim displayNamesList As String = ""
+
+    For Each oComp In oSelections
+        displayNamesList &= oComp.Name & vbCrLf
+    Next
+
+    displayNamesList = TruncateTextBlock(
+        displayNamesList,
+        30,
+        41,
+        "",
+        "...",
+        "... A lista continua aqui"
+    )
+
+    ' Solicitar ao usuário o texto antigo e o novo texto
+    Dim oldText As String = InputBox(
+        "Componentes selecionados" & vbCrLf &
+        displayNamesList & vbCrLf & vbCrLf & vbCrLf &
+        "Digite o texto que deseja substituir (Texto antigo):",
+        "CADMajigs"
+    )
+
+    If oldText = "" Or oldText Is Nothing Then
+
+        MessageBox.Show(
+            "Operação cancelada ou nenhum texto informado. Nenhuma alteração foi realizada.",
+            "CADMajigs"
+        )
+
+        Exit Sub
+
+    End If
+
+    Dim newText As String = InputBox(
+        "Componentes selecionados" & vbCrLf &
+        displayNamesList & vbCrLf &
+        "Digite o novo texto que substituirá o texto antigo (Novo texto):",
+        "CADMajigs"
+    )
+
+    Dim changedCount As Integer = 0
+    Dim totalCount As Integer = oSelections.Count
+
+    ' Percorrer todos os nomes de exibição e substituir o texto antigo pelo novo
+    For Each oComp In oSelections
+
+        ' Verificar se o nome do componente contém o texto antigo
+        If Not oComp.Name.Contains(oldText) Then
+            Continue For
+        End If
+
+        ' Obter o nome principal, removendo o sufixo após os dois-pontos
+        Dim baseName As String =
+            oComp.Name.Substring(0, oComp.Name.LastIndexOf(":"))
+
+        ' Substituir o texto antigo pelo novo
+        baseName = Replace(baseName, oldText, newText)
+
+        ' Gerar um novo sufixo exclusivo
+        Dim newDisplayName As String = GetUniqueDisplayName(baseName)
+
+        ' Verificar se o nome foi realmente alterado
+        If oComp.Name <> newDisplayName Then
+
+            oComp.Name = newDisplayName
+            changedCount += 1
+
+        End If
+
+    Next
+
+    ' Informar ao usuário o resultado da operação
+    If changedCount = 0 Then
+
+        MessageBox.Show(
+            """" & oldText & """ não foi encontrado em nenhum dos componentes selecionados. Nenhuma alteração foi realizada.",
+            "CADMajigs"
+        )
+
+    Else
+
+        MessageBox.Show(
+            changedCount & " de " & totalCount & " nomes de exibição foram alterados.",
+            "CADMajigs"
+        )
+
+    End If
+
+End Sub
+
+Sub DisplayNamesUsingTemplate(ByVal oSelection As SelectSet)
+
+    Dim groupBySource As Boolean = (
+        MessageBox.Show(
+            "Deseja agrupar os componentes que possuem o mesmo arquivo de origem e atribuir a eles nomes de exibição idênticos?",
+            "CADMajigs",
+            MessageBoxButtons.YesNo
+        ) = DialogResult.Yes
+    )
+
+    Dim namingTemplate As String = InputBox(
+        "Informe um modelo de nomenclatura:",
+        "CADMajigs",
+        "Plate [c,01,1]"
+    )
+
+    ' Verificar se o usuário solicitou ajuda ou cancelou a operação
+    If namingTemplate = "Help" Then
+        TemplateHelp("Você solicitou ajuda.", "")
+        Exit Sub
+    End If
+
+    If namingTemplate = "" Or namingTemplate Is Nothing Then
+        TemplateHelp("Você não informou um modelo. Operação cancelada sem realizar alterações.", "")
+        Exit Sub
+    End If
+
+    On Error GoTo ErrorHandler
+
+    Dim counters As New Dictionary(Of String, Integer())
+    Dim groupDictionary As New Dictionary(Of String, String)()
+
+    ' Padrões de expressão regular para cada campo
+    Dim counterPattern As String = "\[c,(\d+),(\d+)\]"
+    Dim iPropertyPattern As String = "\[i,(.*?)\]"
+    Dim CustomiPropertyPattern As String = "\[ic,(.*?)\]"
+    Dim parameterPattern As String = "\[p,(.*?)\]"
+    Dim parameterUnitsPattern As String = "\[pu,(.*?)\]"
+    Dim datePattern As String = "\[d,(.*?)\]"
+    Dim dateCreatedPattern As String = "\[dc,(.*?)\]"
+    Dim dateModifiedPattern As String = "\[dm,(.*?)\]"
+    Dim fileNamePattern As String = "\[f\]"
+    Dim fileExtPattern As String = "\[fe\]"
+    Dim filePathPattern As String = "\[fp\]"
+
+    For Each oObj In oSelection
+
+        If TypeOf oObj Is ComponentOccurrence Then
+
+            Dim oComp As ComponentOccurrence = DirectCast(oObj, ComponentOccurrence)
+            Dim currentName As String = namingTemplate
+            Dim referencedPath As String = oComp.ReferencedDocumentDescriptor.FullDocumentName
+
+            ' Agrupar componentes pelo arquivo de origem
+            If groupBySource AndAlso groupDictionary.ContainsKey(referencedPath) Then
+
+                oComp.Name = GetUniqueDisplayName(groupDictionary(referencedPath))
+                Continue For
+
+            End If
+
+            ' Substituição do contador
+            Dim counterMatches As MatchCollection = Regex.Matches(namingTemplate, counterPattern)
+
+            For Each Match As Match In counterMatches
+
+                Dim startValue As Integer = Integer.Parse(Match.Groups(1).Value)
+                Dim increment As Integer = Integer.Parse(Match.Groups(2).Value)
+                Dim counterKey As String = Match.Value
+
+                If Not counters.ContainsKey(counterKey) Then
+
+                    counters(counterKey) = New Integer() {startValue, increment}
+
+                Else
+
+                    counters(counterKey)(0) += counters(counterKey)(1)
+
+                End If
+
+                Dim replacement As String =
+                    counters(counterKey)(0).ToString().PadLeft(Match.Groups(1).Value.Length, "0"c)
+
+                currentName = currentName.Replace(Match.Value, replacement)
+
+            Next
+
+            ' Substituição das propriedades iProperty padrão
+            Dim iPropMatches As MatchCollection = Regex.Matches(namingTemplate, iPropertyPattern)
+
+            For Each match As Match In iPropMatches
+
+                Dim iPropertyName As String = match.Groups(1).Value
+                Dim iPropertyValue As String = GetiPropertyValue(oComp, iPropertyName)
+
+                currentName = currentName.Replace(match.Value, iPropertyValue)
+
+            Next
+
+            ' Substituição das propriedades iProperty personalizadas
+            Dim CustomiPropMatches As MatchCollection =
+                Regex.Matches(namingTemplate, CustomiPropertyPattern)
+
+            For Each Match As Match In CustomiPropMatches
+
+                Dim CustomiPropertyName As String = Match.Groups(1).Value
+                Dim CustomiPropertyValue As String =
+                    GetCustomiPropertyValue(oComp, CustomiPropertyName)
+
+                currentName = currentName.Replace(Match.Value, CustomiPropertyValue)
+
+            Next
+
+            ' Substituição dos parâmetros
+            Dim paramMatches As MatchCollection =
+                Regex.Matches(namingTemplate, parameterPattern)
+
+            For Each match As Match In paramMatches
+
+                Dim parameterName As String = match.Groups(1).Value
+                Dim parameterValue As String = GetParameterValue(oComp, parameterName)
+
+                currentName = currentName.Replace(match.Value, parameterValue)
+
+            Next
+
+            ' Substituição das unidades dos parâmetros
+            Dim parameterUnitsMatches As MatchCollection =
+                Regex.Matches(namingTemplate, parameterUnitsPattern)
+
+            For Each match As Match In parameterUnitsMatches
+
+                Dim parameterName As String = match.Groups(1).Value
+                Dim parameterUnit As String = GetParameterUnits(oComp, parameterName)
+
+                currentName = currentName.Replace(match.Value, parameterUnit)
+
+            Next
+
+            ' Substituição da data atual
+            Dim dateMatches As MatchCollection =
+                Regex.Matches(namingTemplate, datePattern)
+
+            For Each Match As Match In dateMatches
+
+                Dim DateFormat As String = Match.Groups(1).Value
+                Dim currentDate As String = FormatDate(DateTime.Now, DateFormat)
+
+                currentName = currentName.Replace(Match.Value, currentDate)
+
+            Next
+
+            ' Substituição da data de criação do arquivo
+            Dim dateCreatedMatches As MatchCollection =
+                Regex.Matches(namingTemplate, "\[dc,(.*?)\]")
+
+            For Each Match As Match In dateCreatedMatches
+
+                Dim DateFormat As String = Match.Groups(1).Value
+                Dim dateCreated As DateTime = GetDateCreatedFromFile(oComp)
+                Dim formattedDateCreated As String = FormatDate(dateCreated, DateFormat)
+
+                currentName = currentName.Replace(Match.Value, formattedDateCreated)
+
+            Next
+
+            ' Substituição da data de modificação do arquivo
+            Dim dateModifiedMatches As MatchCollection =
+                Regex.Matches(namingTemplate, "\[dm,(.*?)\]")
+
+            For Each Match As Match In dateModifiedMatches
+
+                Dim DateFormat As String = Match.Groups(1).Value
+                Dim dateModified As DateTime = GetDateModifiedFromFile(oComp)
+                Dim formattedDateModified As String = FormatDate(dateModified, DateFormat)
+
+                currentName = currentName.Replace(Match.Value, formattedDateModified)
+
+            Next
+
+            ' Substituição do nome do arquivo, sem a extensão
+            Dim fileNameMatches As MatchCollection =
+                Regex.Matches(namingTemplate, fileNamePattern)
+
+            For Each Match As Match In fileNameMatches
+
+                Dim fileNameWithoutExtension As String =
+                    System.IO.Path.GetFileNameWithoutExtension(referencedPath)
+
+                currentName = currentName.Replace(Match.Value, fileNameWithoutExtension)
+
+            Next
+
+            ' Substituição da extensão do arquivo
+            Dim fileExtMatches As MatchCollection =
+                Regex.Matches(namingTemplate, fileExtPattern)
+
+            For Each Match As Match In fileExtMatches
+
+                Dim fileExtension As String =
+                    System.IO.Path.GetExtension(referencedPath).TrimStart(".")
+
+                currentName = currentName.Replace(Match.Value, fileExtension)
+
+            Next
+
+            ' Substituição pelo caminho completo do arquivo
+            Dim filePathMatches As MatchCollection =
+                Regex.Matches(namingTemplate, filePathPattern)
+
+            For Each Match As Match In filePathMatches
+
+                currentName = currentName.Replace(Match.Value, referencedPath)
+
+            Next
+
+            ' Atualizar o dicionário caso o agrupamento por arquivo de origem esteja ativado
+            If groupBySource Then
+                groupDictionary(referencedPath) = currentName
+            End If
+
+            currentName = GetUniqueDisplayName(currentName)
+            oComp.Name = currentName
+
+        End If
+
+    Next
+
+    Exit Sub
+
+ErrorHandler:
+
+    TemplateHelp(
+        "Ocorreu um erro ao processar o modelo. Verifique o modelo informado e tente novamente.",
+        ""
+    )
+
+End Sub
+
+
+Sub TemplateHelp(PrefixContent As String, SuffixContent As String)
+
+    Dim messageContent As String
+
+    messageContent = "INSTRUÇÕES DOS MODELOS DE NOMENCLATURA:" & vbCrLf & _
+                     vbCrLf & _
+                     "Ao criar modelos de nomenclatura, podem ser utilizados diferentes identificadores de campos para incluir informações dinâmicas. Cada identificador possui um formato específico e uma finalidade diferente. Veja abaixo a descrição de cada um, juntamente com exemplos:" & vbCrLf & _
+                     vbCrLf & _
+                     "1. Contador" & vbCrLf & _
+                     "   Formato: [c,valorInicial,incremento]" & vbCrLf & _
+                     "   Finalidade: Gera uma sequência numérica exclusiva." & vbCrLf & _
+                     "   Exemplo: O modelo ""Peça-[c,100,5]"" poderá gerar nomes como ""Peça-100"", ""Peça-105"", ""Peça-110"", etc." & vbCrLf & _
+                     vbCrLf & _
+                     "2. iProperty" & vbCrLf & _
+                     "   Formato: [i,NomeDaPropriedade]" & vbCrLf & _
+                     "   Finalidade: Obtém valores das propriedades iProperty padrão." & vbCrLf & _
+                     "   Exemplo: O modelo ""DesenhadoPor-[i,Author]"" com a propriedade ""Author"" contendo ""João"" irá gerar ""DesenhadoPor-João""." & vbCrLf & _
+                     vbCrLf & _
+                     "3. iProperty personalizada" & vbCrLf & _
+                     "   Formato: [ic,NomeDaPropriedadePersonalizada]" & vbCrLf & _
+                     "   Finalidade: Obtém valores das propriedades iProperty personalizadas." & vbCrLf & _
+                     "   Exemplo: O modelo ""Material-[ic,MaterialType]"" com a propriedade personalizada ""MaterialType"" contendo ""Aço"" irá gerar ""Material-Aço""." & vbCrLf & _
+                     vbCrLf & _
+                     "4. Parâmetro" & vbCrLf & _
+                     "   Formato: [p,NomeDoParametro]" & vbCrLf & _
+                     "   Finalidade: Obtém os valores dos parâmetros." & vbCrLf & _
+                     "   Exemplo: O modelo ""Comprimento-[p,Width]"" com o parâmetro ""Width"" contendo o valor ""50mm"" irá gerar ""Comprimento-50mm""." & vbCrLf & _
+                     vbCrLf & _
+                     "5. Unidades do parâmetro" & vbCrLf & _
+                     "   Formato: [pu,NomeDoParametro]" & vbCrLf & _
+                     "   Finalidade: Obtém as unidades utilizadas pelo parâmetro." & vbCrLf & _
+                     "   Exemplo: O modelo ""Largura em [pu,Width]"" com o parâmetro ""Width"" configurado em centímetros irá gerar ""Largura em cm""." & vbCrLf & _
+                     vbCrLf & _
+                     "6. Data atual" & vbCrLf & _
+                     "   Formato: [d,FormatoDaData]" & vbCrLf & _
+                     "   Finalidade: Exibe a data atual." & vbCrLf & _
+                     "   Exemplo: Para a data ""1 de janeiro de 2023"", o modelo ""Hoje-[d,dd-MM-yyyy]"" irá gerar ""Hoje-01-01-2023""." & vbCrLf & _
+                     vbCrLf & _
+                     "7. Data de criação" & vbCrLf & _
+                     "   Formato: [dc,FormatoDaData]" & vbCrLf & _
+                     "   Finalidade: Exibe a data de criação do arquivo." & vbCrLf & _
+                     "   Exemplo: Para a data de criação ""10 de fevereiro de 2022"", o modelo ""CriadoEm-[dc,MM-yyyy]"" irá gerar ""CriadoEm-02-2022""." & vbCrLf & _
+                     vbCrLf & _
+                     "8. Data de modificação" & vbCrLf & _
+                     "   Formato: [dm,FormatoDaData]" & vbCrLf & _
+                     "   Finalidade: Exibe a data da última modificação do arquivo." & vbCrLf & _
+                     "   Exemplo: Para uma modificação realizada em ""15 de março de 2023"", o modelo ""Modificado-[dm,yyyy]"" irá gerar ""Modificado-2023""." & vbCrLf & _
+                     vbCrLf & _
+                     "9. Nome do arquivo (sem extensão)" & vbCrLf & _
+                     "   Formato: [f]" & vbCrLf & _
+                     "   Finalidade: Obtém o nome do arquivo sem sua extensão." & vbCrLf & _
+                     "   Exemplo: Para o arquivo ""ExemploPeca.ipt"", o modelo ""Original-[f]"" irá gerar ""Original-ExemploPeca""." & vbCrLf & _
+                     vbCrLf & _
+                     "10. Extensão do arquivo" & vbCrLf & _
+                     "   Formato: [fe]" & vbCrLf & _
+                     "   Finalidade: Obtém a extensão do arquivo." & vbCrLf & _
+                     "   Exemplo: Para o arquivo ""ProjetoPeca.ipt"", o modelo ""Extensao.[fe]"" irá gerar ""Extensao.ipt""." & vbCrLf & _
+                     vbCrLf & _
+                     "11. Caminho do arquivo" & vbCrLf & _
+                     "   Formato: [fp]" & vbCrLf & _
+                     "   Finalidade: Obtém o caminho completo do arquivo." & vbCrLf & _
+                     "   Exemplo: Para um arquivo localizado em ""C:\Documentos\Projetos\Peca1.ipt"", o modelo ""Caminho-[fp]"" irá gerar ""Caminho-C:\Documentos\Projetos\Peca1.ipt""."
+
+    If PrefixContent <> "" Then
+        messageContent = PrefixContent & vbCrLf & vbCrLf & messageContent
+    End If
+
+    If SuffixContent <> "" Then
+        messageContent = messageContent & vbCrLf & vbCrLf & SuffixContent
+    End If
+
+    MessageBox.Show(messageContent, "CADMajigs - Instruções dos modelos")
+
+End Sub
+
+Function GetiPropertyValue(oComp As ComponentOccurrence, iPropertyName As String) As String
+
+    ' Percorrer os conjuntos de propriedades iProperty padrão
+    Dim iPropertySets As Array = {
+        "Design Tracking Properties",
+        "Summary Information",
+        "Document Summary Information"
+    }
+
+    For Each iPropertySet As String In iPropertySets
+
+        Dim propSet As PropertySet =
+            oComp.Definition.Document.PropertySets.item(iPropertySet)
+
+        For Each prop In propSet
+
+            If prop.Name = iPropertyName Then
+                Return prop.Value.ToString()
+            End If
+
+        Next
+
+    Next
+
+    ' Retornar uma string vazia caso a propriedade não seja encontrada
+    Return String.Empty
+
+End Function
+
+
+Function GetCustomiPropertyValue(oComp As ComponentOccurrence, CustomiPropertyName As String) As String
+
+    ' Percorrer os conjuntos de propriedades personalizadas
+    Dim iPropertySets As Array = {
+        "User Defined Properties"
+    }
+
+    For Each iPropertySet As String In iPropertySets
+
+        Dim propSet As PropertySet =
+            oComp.Definition.Document.PropertySets.item(iPropertySet)
+
+        For Each prop In propSet
+
+            If prop.Name = CustomiPropertyName Then
+                Return prop.Value.ToString()
+            End If
+
+        Next
+
+    Next
+
+    ' Retornar uma string vazia caso a propriedade não seja encontrada
+    Return String.Empty
+
+End Function
+
+
+Function GetParameterValue(oComp As ComponentOccurrence, parameterName As String) As String
+
+    Try
+
+        Dim param As Parameter = Nothing
+
+        ' Tentar obter o parâmetro em ModelParameters
+        Try
+
+            param = oComp.Definition.Parameters.ModelParameters.Item(parameterName)
+
+        Catch ex As Exception
+
+            ' Caso não seja encontrado em ModelParameters,
+            ' tentar localizar em UserParameters
+            param = oComp.Definition.Parameters.UserParameters.Item(parameterName)
+
+        End Try
+
+        ' Retornar o valor do parâmetro, caso ele exista
+        If param IsNot Nothing Then
+
+            Return param.Value.ToString()
+
+        Else
+
+            Throw New Exception("Parâmetro não encontrado.")
+
+        End If
+
+    Catch ex As Exception
+
+        ' Retornar uma string vazia caso o parâmetro não seja encontrado
+        Return ""
+
+    End Try
+
+End Function
+
+
+Function GetParameterUnits(oComp As ComponentOccurrence, parameterName As String) As String
+
+    Try
+
+        Dim param As Parameter = Nothing
+
+        ' Tentar obter o parâmetro em ModelParameters
+        Try
+
+            param = oComp.Definition.Parameters.ModelParameters.Item(parameterName)
+
+        Catch ex As Exception
+
+            ' Caso não seja encontrado em ModelParameters,
+            ' tentar localizar em UserParameters
+            param = oComp.Definition.Parameters.UserParameters.Item(parameterName)
+
+        End Try
+
+        ' Retornar as unidades do parâmetro, caso ele exista
+        If param IsNot Nothing Then
+
+            Return param.Units
+
+        Else
+
+            Throw New Exception("Parâmetro não encontrado.")
+
+        End If
+
+    Catch ex As Exception
+
+        ' Retornar uma string vazia caso o parâmetro não seja encontrado
+        Return ""
+
+    End Try
+
+End Function
+
+
+Function GetUniqueDisplayName(ByVal baseName As String) As String
+
+    Dim counter As Integer = 1
+
+    ' Verificar se o nome já existe e incrementar o número até encontrar um nome exclusivo
+    While DisplayNameExists(baseName & ":" & counter.ToString())
+
+        counter += 1
+
+    End While
+
+    Return baseName & ":" & counter.ToString()
+
+End Function
+
+
+Function DisplayNameExists(ByVal nameToCheck As String) As Boolean
+
+    Dim oAsmDoc As AssemblyDocument = ThisApplication.ActiveDocument
+
+    ' Percorrer todos os componentes da montagem
+    For Each oCompOcc As ComponentOccurrence In oAsmDoc.ComponentDefinition.Occurrences
+
+        If oCompOcc.Name = nameToCheck Then
+            Return True
+        End If
+
+    Next
+
+    Return False
+
+End Function
+
+
+Function GetSelection(oSelSet As SelectSet) As Collection
+
+    Dim storedSelections As New Collection
+
+    ' Armazenar todos os elementos atualmente selecionados
+    For Each item In oSelSet
+
+        storedSelections.Add(item)
+
+    Next
+
+    GetSelection = storedSelections
+
+End Function
+
+
+Sub RestoreSelection(ByRef storedSelections As Collection)
+
+    Dim oAsmDoc As AssemblyDocument
+    oAsmDoc = ThisApplication.ActiveDocument
+
+    ' Limpar a seleção atual
+    oAsmDoc.SelectSet.Clear()
+
+    ' Restaurar todos os elementos da seleção original
+    For Each item In storedSelections
+
+        oAsmDoc.SelectSet.Select(item)
+
+    Next
+
+End Sub
+
+
+Function FormatDate(ByVal inputDate As DateTime, ByVal formatString As String) As String
+
+    ' Formatar a data conforme o padrão informado pelo usuário
+    Return inputDate.ToString(formatString)
+
+End Function
+
+
+Function GetDateCreatedFromFile(oComp As ComponentOccurrence) As DateTime
+
+    ' Obter o caminho do arquivo referenciado pelo componente
+    Dim filePath As String = oComp.ReferencedDocumentDescriptor.FullDocumentName
+
+    ' Obter as informações do arquivo
+    Dim FileInfo As New FileInfo(filePath)
+
+    ' Retornar a data de criação do arquivo
+    Return FileInfo.CreationTime
+
+End Function
+
+
+Function GetDateModifiedFromFile(oComp As ComponentOccurrence) As DateTime
+
+    ' Obter o caminho do arquivo referenciado pelo componente
+    Dim filePath As String = oComp.ReferencedDocumentDescriptor.FullDocumentName
+
+    ' Obter as informações do arquivo
+    Dim FileInfo As New FileInfo(filePath)
+
+    ' Retornar a data da última modificação do arquivo
+    Return FileInfo.LastWriteTime
+
+End Function
+
+Sub FormatLeadingZeros(oSelections As SelectSet)
+
+    Dim oAsmDoc As Inventor.AssemblyDocument
+    oAsmDoc = ThisApplication.ActiveDocument
+
+    ' Gerar uma lista com os nomes de exibição dos componentes
+    Dim displayNamesList As String = ""
+
+    For Each oComp In oSelections
+
+        displayNamesList &= oComp.Name & vbCrLf
+
+    Next
+
+    displayNamesList = TruncateTextBlock(
+        displayNamesList,
+        30,
+        41,
+        "",
+        "...",
+        "... A lista continua aqui"
+    )
+
+    ' Solicitar ao usuário o modelo de formatação
+    Dim template As String = InputBox(
+        "Componentes selecionados" & vbCrLf &
+        displayNamesList & vbCrLf & vbCrLf & vbCrLf &
+        "Digite o modelo de formatação:",
+        "CADMajigs"
+    )
+
+    ' Verificar se o usuário solicitou ajuda
+    If UCase(template) = "HELP" Then
+
+        LeadingZerosHelp("Você solicitou ajuda.", "")
+        Exit Sub
+
+    ElseIf template = "" Then
+
+        LeadingZerosHelp(
+            "Operação cancelada ou nenhum modelo informado. Nenhuma alteração foi realizada.",
+            ""
+        )
+
+        Exit Sub
+
+    End If
+
+    ' Verificar se o modelo contém somente números
+    ' Caso positivo, adicionar automaticamente o identificador A:
+    If IsNumeric(template) Then
+
+        template = "A:" & template
+
+    End If
+
+    On Error GoTo ErrorHandler
+
+    ' Separar as instruções individuais do modelo
+    Dim instructions() As String = Split(template, ",")
+
+    ' Percorrer todos os nomes de exibição e aplicar a formatação
+    For Each oComp In oSelections
+
+        Dim formattedName As String =
+            oComp.Name.Substring(0, oComp.Name.LastIndexOf(":"))
+
+        For Each instruction As String In instructions
+
+            Dim parts() As String = Split(instruction, ":")
+
+            Dim indexOrAllOrTruncate As String = parts(0)
+            Dim lengthInfo As String = parts(1)
+
+            ' Verificar se a instrução utiliza A para formatar todos os números
+            If indexOrAllOrTruncate.ToUpper() = "A" Then
+
+                formattedName = ReplaceAllNumbers(formattedName, lengthInfo)
+
+            Else
+
+                Dim index As Integer = CInt(indexOrAllOrTruncate)
+
+                ' Obter o número desejado pela sua posição
+                ' Também é possível contar a partir do último número
+                Dim numberToFormat As String =
+                    GetNthNumber(formattedName, index)
+
+                If numberToFormat = "" Then Continue For
+
+                ' Aplicar a formatação ao número
+                Dim formattedNumber As String =
+                    FormatNumber(numberToFormat, lengthInfo)
+
+                ' Substituir o número original pelo número formatado
+                formattedName = ReplaceNthNumber(
+                    formattedName,
+                    index,
+                    formattedNumber
+                )
+
+            End If
+
+        Next
+
+        ' Atualizar o nome de exibição caso tenha ocorrido alguma alteração
+        If oComp.Name <> formattedName Then
+
+            oComp.Name = GetUniqueDisplayName(formattedName)
+
+        End If
+
+    Next
+
+    Exit Sub
+
+ErrorHandler:
+
+    ' Exibir as instruções caso ocorra algum erro no modelo informado
+    LeadingZerosHelp("O modelo informado não é válido!", "")
+
+End Sub
+
+
+Function TruncateTextBlock(
+    ByVal textBlock As String,
+    ByVal maxLines As Integer,
+    ByVal maxCharsPerLine As Integer,
+    prefixContent As String,
+    inlineSuffix As String,
+    suffixContent As String
+) As String
+
+    Dim truncatedTextBlock As String
+    Dim lineCount As Integer
+
+    ' Separar a lista em linhas individuais
+    Dim lines() As String = Split(textBlock, vbCrLf)
+
+    Dim i As Integer
+
+    ' Verificar cada linha e considerar a quebra automática de texto
+    For i = 0 To UBound(lines)
+
+        Dim wrappedLines As Integer
+
+        ' Calcular quantas linhas serão necessárias para exibir o texto
+        wrappedLines = Ceiling(Len(lines(i)) / maxCharsPerLine)
+
+        ' Verificar se a inclusão dessas linhas ultrapassará o limite máximo
+        If lineCount + wrappedLines > maxLines Then
+
+            Exit For
+
+        End If
+
+        ' Adicionar a linha à lista e atualizar o contador
+        truncatedTextBlock &= lines(i) & vbCrLf
+
+        lineCount = lineCount + wrappedLines
+
+    Next i
+
+    ' Se ainda existirem linhas, adicionar reticências para indicar que a lista foi cortada
+    If i < UBound(lines) Then
+
+        ' Remover a última quebra de linha
+        truncatedTextBlock = Left(
+            truncatedTextBlock,
+            Len(truncatedTextBlock) - Len(vbCrLf)
+        )
+
+        truncatedTextBlock &= inlineSuffix
+
+        If prefixContent <> "" Then
+
+            truncatedTextBlock =
+                prefixContent & vbCrLf & vbCrLf & truncatedTextBlock
+
+        End If
+
+        If suffixContent <> "" Then
+
+            truncatedTextBlock &=
+                vbCrLf & vbCrLf & suffixContent
+
+        End If
+
+    End If
+
+    ' Retornar a lista formatada
+    Return truncatedTextBlock
+
+End Function
+
+
+Function Ceiling(ByVal num As Double) As Integer
+
+    ' Função auxiliar para arredondar um número para o próximo inteiro
+    Ceiling = -Int(-num)
+
+End Function
+
+
+Function FormatNumber(numberToFormat As String, length As String) As String
+
+    ' Se começar com P, preservar os zeros existentes à esquerda
+    If length.StartsWith("P") Then
+
+        Return numberToFormat.PadLeft(
+            CInt(length.Substring(1)),
+            "0"c
+        )
+
+    End If
+
+    ' Converter o número e adicionar zeros à esquerda até atingir o tamanho desejado
+    Return CInt(numberToFormat).ToString().PadLeft(
+        CInt(length),
+        "0"c
+    )
+
+End Function
+
+
+Function ReplaceAllNumbers(inputStr As String, lengthInfo As String) As String
+
+    Dim result As String = ""
+    Dim currentNumber As String = ""
+
+    ' Percorrer todos os caracteres do texto
+    For Each character As Char In inputStr
+
+        If Char.IsDigit(character) Then
+
+            currentNumber &= character
+
+        Else
+
+            If currentNumber <> "" Then
+
+                ' Formatar o número encontrado
+                result &= FormatNumber(currentNumber, lengthInfo)
+
+                currentNumber = ""
+
+            End If
+
+            result &= character
+
+        End If
+
+    Next
+
+    ' Processar o último número, caso exista
+    If currentNumber <> "" Then
+
+        result &= FormatNumber(currentNumber, lengthInfo)
+
+    End If
+
+    Return result
+
+End Function
+
+
+Function GetNthNumber(inputStr As String, n As Integer) As String
+
+    Dim Regex As New System.Text.RegularExpressions.Regex("\d+")
+
+    Dim matches As System.Text.RegularExpressions.MatchCollection =
+        Regex.Matches(inputStr)
+
+    Dim numberCount As Integer = matches.Count
+
+    ' Retornar uma string vazia se não houver números
+    ' ou se a posição informada for inválida
+    If numberCount = 0 Then Return ""
+
+    If n = 0 Then Return ""
+
+    ' Se o número for positivo, buscar a posição contando do início
+    If n > 0 Then
+
+        If n <= numberCount Then
+
+            Return matches(n - 1).Value
+
+        End If
+
+        Return ""
+
+    End If
+
+    ' Se o número for negativo, contar a posição a partir do final
+    If Abs(n) <= numberCount Then
+
+        Return matches(numberCount + n).Value
+
+    End If
+
+    Return ""
+
+End Function
+
+
+Function ReplaceNthNumber(
+    inputStr As String,
+    n As Integer,
+    replacement As String
+) As String
+
+    If n = 0 Then Return inputStr
+
+    Dim Regex As New System.Text.RegularExpressions.Regex("\d+")
+
+    Dim matches As System.Text.RegularExpressions.MatchCollection =
+        Regex.Matches(inputStr)
+
+    Dim numberCount As Integer = matches.Count
+
+    ' Se não houver números ou a posição for inválida, retornar o texto original
+    If numberCount = 0 Then Return inputStr
+
+    If n > Math.Abs(numberCount) Then Return inputStr
+
+    ' Determinar a posição real do número
+    Dim actualIndex As Integer =
+        IIf(n > 0, n - 1, numberCount + n)
+
+    ' Separar o texto antes e depois do número que será substituído
+    Dim prefix As String =
+        inputStr.Substring(0, matches(actualIndex).Index)
+
+    Dim suffix As String =
+        inputStr.Substring(
+            matches(actualIndex).Index + matches(actualIndex).Length
+        )
+
+    ' Reconstruir o texto com o número formatado
+    Return prefix & replacement & suffix
+
+End Function
+
+
+Sub LeadingZerosHelp(PrefixContent As String, SuffixContent As String)
+
+    Dim messageContent As String
+
+    messageContent = "INSTRUÇÕES DOS MODELOS DE FORMATAÇÃO:" & vbCrLf & _
+                     vbCrLf & _
+                     "- O modelo utiliza uma vírgula para separar diferentes instruções." & vbCrLf & _
+                     "- Cada instrução possui duas partes, separadas por dois-pontos." & vbCrLf & _
+                     "- A primeira parte indica qual número do nome será formatado. A contagem começa em 1. Utilize ""A"" para selecionar todos os números ou informe apenas um número para formatar todos os números com o tamanho especificado." & vbCrLf & _
+                     "- A segunda parte determina o tamanho que o número deverá ter." & vbCrLf & _
+                     "- Se o segundo valor começar com ""P"", os zeros existentes à esquerda serão preservados, garantindo o tamanho mínimo especificado." & vbCrLf & _
+                     vbCrLf & _
+                     "EXEMPLOS:" & vbCrLf & _
+                     vbCrLf & _
+                     "1. ""3""" & vbCrLf & _
+                     "   Esta instrução adiciona zeros à esquerda de todos os números do nome até que cada um tenha 3 dígitos." & vbCrLf & _
+                     "   Exemplo: ""Bracket12Assembly34"" será alterado para ""Bracket012Assembly034""." & vbCrLf & _
+                     vbCrLf & _
+                     "2. ""1:3""" & vbCrLf & _
+                     "   Esta instrução adiciona zeros à esquerda do primeiro número do nome até que ele tenha 3 dígitos." & vbCrLf & _
+                     "   Exemplo: ""Assembly12Part34"" será alterado para ""Assembly012Part34""." & vbCrLf & _
+                     vbCrLf & _
+                     "3. ""A:4""" & vbCrLf & _
+                     "   Esta instrução formata todos os números para que tenham 4 dígitos, adicionando zeros à esquerda." & vbCrLf & _
+                     "   Exemplo: ""Bracket12Assembly34"" será alterado para ""Bracket0012Assembly0034""." & vbCrLf & _
+                     vbCrLf & _
+                     "4. ""1:P3""" & vbCrLf & _
+                     "   Esta instrução preserva os zeros existentes à esquerda do primeiro número, garantindo que ele tenha pelo menos 3 dígitos." & vbCrLf & _
+                     "   Exemplo: ""Assembly12Part34"" será alterado para ""Assembly012Part34"". Entretanto, ""Component0004Bracket34"" permanecerá ""Component0004Bracket34""." & vbCrLf & _
+                     vbCrLf & _
+                     "5. ""-2:4""" & vbCrLf & _
+                     "   Esta instrução adiciona zeros à esquerda do penúltimo número do nome até que ele tenha 4 dígitos." & vbCrLf & _
+                     "   Exemplo: ""Block12Rev34Type7"" será alterado para ""Block12Rev0034Type7""." & vbCrLf & _
+                     vbCrLf & _
+                     "6. ""A:4,-1:3""" & vbCrLf & _
+                     "   Esta instrução combina as instruções A:4 e -1:3." & vbCrLf & _
+                     "   Primeiro, A:4 formata todos os números para que tenham 4 dígitos." & vbCrLf & _
+                     "   Depois, -1:3 formata o último número para que tenha 3 dígitos." & vbCrLf & _
+                     "   Exemplo: ""Assembly12Type7Part34"" será alterado para ""Assembly0012Type0007Part034""."
+
+    If PrefixContent <> "" Then
+
+        messageContent =
+            PrefixContent & vbCrLf & vbCrLf & messageContent
+
+    End If
+
+    If SuffixContent <> "" Then
+
+        messageContent &=
+            vbCrLf & vbCrLf & SuffixContent
+
+    End If
+
+    MessageBox.Show(
+        messageContent,
+        "CADMajigs - Instruções para adicionar zeros à esquerda"
+    )
+
+End Sub
+
+
+
+
